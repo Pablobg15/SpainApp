@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import {
+  ActivityIndicator,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { supabase } from '../lib/supabase';
 import { appColors, appFonts } from '../theme';
 
 type AuthMode = 'login' | 'register';
@@ -18,6 +20,28 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
+function getAuthErrorMessage(message: string) {
+  const normalizedMessage = message.toLowerCase();
+
+  if (normalizedMessage.includes('invalid login credentials')) {
+    return 'Email o contraseña incorrectos.';
+  }
+
+  if (normalizedMessage.includes('email not confirmed')) {
+    return 'Tienes que confirmar tu email antes de entrar.';
+  }
+
+  if (normalizedMessage.includes('user already registered')) {
+    return 'Ya existe una cuenta con este email.';
+  }
+
+  if (normalizedMessage.includes('password')) {
+    return 'La contraseña no cumple los requisitos.';
+  }
+
+  return 'Ha ocurrido un error. Inténtalo de nuevo.';
+}
+
 export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
   const [mode, setMode] = useState<AuthMode>('login');
 
@@ -25,7 +49,10 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [repeatPassword, setRepeatPassword] = useState('');
+
   const [errorMessage, setErrorMessage] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   const isRegister = mode === 'register';
 
@@ -34,21 +61,27 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
         name.trim() &&
           email.trim() &&
           password.trim() &&
-          repeatPassword.trim()
+          repeatPassword.trim() &&
+          !isLoading
       )
-    : Boolean(email.trim() && password.trim());
+    : Boolean(email.trim() && password.trim() && !isLoading);
 
   function changeMode(nextMode: AuthMode) {
     setMode(nextMode);
     setErrorMessage('');
+    setInfoMessage('');
     setPassword('');
     setRepeatPassword('');
   }
 
-  function submitAuth() {
+  async function submitAuth() {
     setErrorMessage('');
+    setInfoMessage('');
 
-    if (!isValidEmail(email)) {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
+
+    if (!isValidEmail(cleanEmail)) {
       setErrorMessage('Introduce un email válido.');
       return;
     }
@@ -63,7 +96,52 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
       return;
     }
 
-    onAuthSuccess();
+    try {
+      setIsLoading(true);
+
+      if (isRegister) {
+        const { data, error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: {
+            data: {
+              name: cleanName,
+            },
+          },
+        });
+
+        if (error) {
+          setErrorMessage(getAuthErrorMessage(error.message));
+          return;
+        }
+
+        if (!data.session) {
+          setInfoMessage(
+            'Cuenta creada. Revisa tu email para confirmar la cuenta antes de entrar.'
+          );
+          return;
+        }
+
+        onAuthSuccess();
+        return;
+      }
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
+
+      if (error) {
+        setErrorMessage(getAuthErrorMessage(error.message));
+        return;
+      }
+
+      onAuthSuccess();
+    } catch {
+      setErrorMessage('No se pudo conectar con Supabase.');
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   return (
@@ -159,9 +237,7 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
               style={styles.input}
               secureTextEntry
             />
-          </View>
-
-          {isRegister ? (
+          </View>          {isRegister ? (
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Repetir contraseña</Text>
 
@@ -182,33 +258,46 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
             </View>
           ) : null}
 
+          {infoMessage ? (
+            <View style={styles.infoCard}>
+              <Text style={styles.infoText}>{infoMessage}</Text>
+            </View>
+          ) : null}
+
           <Pressable
             style={[
               styles.submitButton,
               !canContinue && styles.submitButtonDisabled,
             ]}
             onPress={submitAuth}
+            disabled={!canContinue}
           >
-            <Text
-              style={[
-                styles.submitButtonText,
-                !canContinue && styles.submitButtonTextDisabled,
-              ]}
-            >
-              {isRegister ? 'Crear cuenta' : 'Entrar'}
-            </Text>
+            {isLoading ? (
+              <ActivityIndicator color={appColors.black} />
+            ) : (
+              <Text
+                style={[
+                  styles.submitButtonText,
+                  !canContinue && styles.submitButtonTextDisabled,
+                ]}
+              >
+                {isRegister ? 'Crear cuenta' : 'Entrar'}
+              </Text>
+            )}
           </Pressable>
 
           <Text style={styles.helperText}>
             {isRegister
-              ? 'Por ahora el registro es local para probar la app.'
-              : 'Accede para continuar con tu mapa de viajes.'}
+              ? 'Al crear cuenta, tus viajes y provincias se guardarán en Supabase.'
+              : 'Accede para recuperar tu mapa y tus viajes.'}
           </Text>
         </View>
       </View>
     </View>
   );
-}const styles = StyleSheet.create({
+}
+
+const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: appColors.black,
@@ -334,12 +423,28 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
     fontWeight: '800',
     fontFamily: appFonts.main,
   },
+  infoCard: {
+    backgroundColor: 'rgba(34, 197, 94, 0.12)',
+    borderWidth: 1,
+    borderColor: appColors.visited,
+    borderRadius: 16,
+    padding: 13,
+  },
+  infoText: {
+    color: appColors.visited,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '800',
+    fontFamily: appFonts.main,
+  },
   submitButton: {
     backgroundColor: appColors.white,
     borderRadius: 18,
     paddingVertical: 15,
     alignItems: 'center',
     marginTop: 2,
+    minHeight: 51,
+    justifyContent: 'center',
   },
   submitButtonDisabled: {
     backgroundColor: appColors.surfaceSoft,

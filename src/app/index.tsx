@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -18,6 +20,18 @@ import SpainProvinceMap, {
 import TripsScreen, { type Trip } from '../components/TripsScreen';
 import { challenges } from '../data/challenges';
 import { provinces as allProvinces } from '../data/provinces';
+import {
+  fetchProvinceStatuses,
+  removeProvinceStatus,
+  upsertProvinceStatus,
+} from '../lib/provinceStatuses';
+import { supabase } from '../lib/supabase';
+import {
+  createTrip,
+  deleteTripFromSupabase,
+  fetchTrips,
+  updateTripInSupabase,
+} from '../lib/trips';
 import { appColors, appFonts } from '../theme';
 
 type ActiveTab = 'map' | 'provinces' | 'trips' | 'challenges' | 'profile';
@@ -48,7 +62,9 @@ function getProvinceName(provinceId: string) {
 }
 
 export default function HomeScreen() {
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
 
   const [provinceStatuses, setProvinceStatuses] = useState<
     Record<string, ProvinceStatus>
@@ -62,41 +78,138 @@ export default function HomeScreen() {
   const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>('map');
 
-  function setProvinceStatus(id: string, status: ProvinceStatus) {
+  useEffect(() => {
+    async function loadSession() {
+      const { data } = await supabase.auth.getSession();
+
+      setSession(data.session);
+      setIsAuthenticated(Boolean(data.session));
+      setIsAuthLoading(false);
+    }
+
+    loadSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession);
+      setIsAuthenticated(Boolean(currentSession));
+      setIsAuthLoading(false);
+
+      if (!currentSession) {
+        setProvinceStatuses({});
+        setTrips([]);
+        setSelectedProfileTrip(null);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadUserData() {
+      if (!session?.user.id) {
+        return;
+      }
+
+      try {
+        const [savedStatuses, savedTrips] = await Promise.all([
+          fetchProvinceStatuses(session.user.id),
+          fetchTrips(session.user.id),
+        ]);
+
+        if (isMounted) {
+          setProvinceStatuses(savedStatuses);
+          setTrips(savedTrips);
+        }
+      } catch (error) {
+        console.log('Error loading user data:', error);
+      }
+    }
+
+    loadUserData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [session?.user.id]);  async function setProvinceStatus(id: string, status: ProvinceStatus) {
     setSelectedProvince(id);
 
     setProvinceStatuses((currentStatuses) => ({
       ...currentStatuses,
       [id]: status,
     }));
+
+    if (!session?.user.id) {
+      return;
+    }
+
+    try {
+      await upsertProvinceStatus(session.user.id, id, status);
+    } catch (error) {
+      console.log('Error saving province status:', error);
+    }
   }
 
-  function clearProvinceStatus(id: string) {
+  async function clearProvinceStatus(id: string) {
     setProvinceStatuses((currentStatuses) => {
       const updatedStatuses = { ...currentStatuses };
       delete updatedStatuses[id];
       return updatedStatuses;
     });
+
+    if (!session?.user.id) {
+      return;
+    }
+
+    try {
+      await removeProvinceStatus(session.user.id, id);
+    } catch (error) {
+      console.log('Error removing province status:', error);
+    }
   }
 
-  function markTripProvinceAsVisited(provinceId: string) {
-    setProvinceStatuses((currentStatuses) => {
-      if (currentStatuses[provinceId] === 'home') {
-        return currentStatuses;
-      }
+  async function markTripProvinceAsVisited(provinceId: string) {
+    if (provinceStatuses[provinceId] === 'home') {
+      return;
+    }
 
-      return {
-        ...currentStatuses,
-        [provinceId]: 'visited',
-      };
-    });
+    setProvinceStatuses((currentStatuses) => ({
+      ...currentStatuses,
+      [provinceId]: 'visited',
+    }));
+
+    if (!session?.user.id) {
+      return;
+    }
+
+    try {
+      await upsertProvinceStatus(session.user.id, provinceId, 'visited');
+    } catch (error) {
+      console.log('Error saving trip province status:', error);
+    }
   }
 
-  function addTrip(trip: Trip) {
-    setTrips((currentTrips) => [trip, ...currentTrips]);
+  async function addTrip(trip: Trip) {
+    if (!session?.user.id) {
+      setTrips((currentTrips) => [trip, ...currentTrips]);
+      return;
+    }
+
+    try {
+      const savedTrip = await createTrip(session.user.id, trip);
+
+      setTrips((currentTrips) => [savedTrip, ...currentTrips]);
+    } catch (error) {
+      console.log('Error creating trip:', error);
+    }
   }
 
-  function updateTrip(updatedTrip: Trip) {
+  async function updateTrip(updatedTrip: Trip) {
     setTrips((currentTrips) =>
       currentTrips.map((trip) =>
         trip.id === updatedTrip.id ? updatedTrip : trip
@@ -106,9 +219,34 @@ export default function HomeScreen() {
     setSelectedProfileTrip((currentTrip) =>
       currentTrip?.id === updatedTrip.id ? updatedTrip : currentTrip
     );
+
+    if (!session?.user.id) {
+      return;
+    }
+
+    try {
+      const savedTrip = await updateTripInSupabase(
+        session.user.id,
+        updatedTrip
+      );
+
+      setTrips((currentTrips) =>
+        currentTrips.map((trip) =>
+          trip.id === savedTrip.id ? savedTrip : trip
+        )
+      );
+
+      setSelectedProfileTrip((currentTrip) =>
+        currentTrip?.id === savedTrip.id ? savedTrip : currentTrip
+      );
+    } catch (error) {
+      console.log('Error updating trip:', error);
+    }
   }
 
-  function deleteTrip(tripId: string) {
+  async function deleteTrip(tripId: string) {
+    const tripToDelete = trips.find((trip) => trip.id === tripId);
+
     setTrips((currentTrips) =>
       currentTrips.filter((trip) => trip.id !== tripId)
     );
@@ -116,10 +254,29 @@ export default function HomeScreen() {
     setSelectedProfileTrip((currentTrip) =>
       currentTrip?.id === tripId ? null : currentTrip
     );
+
+    if (!session?.user.id) {
+      return;
+    }
+
+    try {
+      await deleteTripFromSupabase(session.user.id, tripId);
+    } catch (error) {
+      console.log('Error deleting trip:', error);
+
+      if (tripToDelete) {
+        setTrips((currentTrips) => [tripToDelete, ...currentTrips]);
+      }
+    }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    await supabase.auth.signOut();
+
+    setSession(null);
     setIsAuthenticated(false);
+    setProvinceStatuses({});
+    setTrips([]);
     setActiveTab('map');
     setSelectedProvince(null);
     setSelectedProfileTrip(null);
@@ -147,9 +304,7 @@ export default function HomeScreen() {
     })
   ).length;
 
-  const totalChallengesCount = challenges.length;
-
-  const headerContent =
+  const totalChallengesCount = challenges.length;  const headerContent =
     activeTab === 'map'
       ? {
           title: 'Mapa',
@@ -174,6 +329,15 @@ export default function HomeScreen() {
                 title: 'Perfil',
                 subtitle: 'Tu resumen personal de viajes por España.',
               };
+
+  if (isAuthLoading) {
+    return (
+      <View style={styles.loadingScreen}>
+        <ActivityIndicator color={appColors.white} />
+        <Text style={styles.loadingText}>Cargando sesión...</Text>
+      </View>
+    );
+  }
 
   if (!isAuthenticated) {
     return <AuthScreen onAuthSuccess={() => setIsAuthenticated(true)} />;
@@ -271,9 +435,7 @@ export default function HomeScreen() {
                 <Text style={styles.profileChallengesNumber}>
                   {completedChallengesCount}/{totalChallengesCount}
                 </Text>
-              </View>
-
-              <View style={styles.profileTripsCard}>
+              </View>              <View style={styles.profileTripsCard}>
                 <View style={styles.profileTripsHeader}>
                   <View style={styles.profileTripsTitleBlock}>
                     <Text style={styles.profileTripsTitle}>Mis viajes</Text>
@@ -356,7 +518,9 @@ export default function HomeScreen() {
             </>
           )}
         </View>
-      </ScrollView>      <View style={styles.bottomBarWrapper}>
+      </ScrollView>
+
+      <View style={styles.bottomBarWrapper}>
         <View style={styles.tabBar}>
           <Pressable
             style={styles.tabButton}
@@ -473,9 +637,7 @@ export default function HomeScreen() {
             </Text>
           </Pressable>
         </View>
-      </View>
-
-      <Modal
+      </View>      <Modal
         visible={!!selectedProfileTrip}
         transparent
         animationType="fade"
@@ -564,6 +726,19 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
+  loadingScreen: {
+    flex: 1,
+    backgroundColor: appColors.black,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  loadingText: {
+    color: appColors.textSecondary,
+    fontSize: 15,
+    fontWeight: '800',
+    fontFamily: appFonts.main,
+  },
   appBackground: {
     flex: 1,
     backgroundColor: appColors.background,
