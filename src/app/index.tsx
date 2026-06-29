@@ -2,6 +2,7 @@ import type { Session } from '@supabase/supabase-js';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Modal,
   Pressable,
@@ -20,6 +21,8 @@ import SpainProvinceMap, {
 import TripsScreen, { type Trip } from '../components/TripsScreen';
 import { challenges } from '../data/challenges';
 import { provinces as allProvinces } from '../data/provinces';
+import { deleteAccount } from '../lib/account';
+import { fetchProfileName } from '../lib/profiles';
 import {
   fetchProvinceStatuses,
   removeProvinceStatus,
@@ -65,6 +68,7 @@ export default function HomeScreen() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
+  const [profileName, setProfileName] = useState('');
 
   const [provinceStatuses, setProvinceStatuses] = useState<
     Record<string, ProvinceStatus>
@@ -100,6 +104,7 @@ export default function HomeScreen() {
         setProvinceStatuses({});
         setTrips([]);
         setSelectedProfileTrip(null);
+        setProfileName('');
       }
     });
 
@@ -117,17 +122,33 @@ export default function HomeScreen() {
       }
 
       try {
-        const [savedStatuses, savedTrips] = await Promise.all([
-          fetchProvinceStatuses(session.user.id),
-          fetchTrips(session.user.id),
-        ]);
+        const [savedStatuses, savedTrips, savedProfileName] =
+          await Promise.all([
+            fetchProvinceStatuses(session.user.id),
+            fetchTrips(session.user.id),
+            fetchProfileName(session.user.id),
+          ]);
 
         if (isMounted) {
           setProvinceStatuses(savedStatuses);
           setTrips(savedTrips);
+          setProfileName(
+            savedProfileName ||
+              session.user.user_metadata?.name ||
+              session.user.email?.split('@')[0] ||
+              'Usuario'
+          );
         }
       } catch (error) {
         console.log('Error loading user data:', error);
+
+        if (isMounted) {
+          setProfileName(
+            session.user.user_metadata?.name ||
+              session.user.email?.split('@')[0] ||
+              'Usuario'
+          );
+        }
       }
     }
 
@@ -136,7 +157,9 @@ export default function HomeScreen() {
     return () => {
       isMounted = false;
     };
-  }, [session?.user.id]);  async function setProvinceStatus(id: string, status: ProvinceStatus) {
+  }, [session?.user.id]);
+
+  async function setProvinceStatus(id: string, status: ProvinceStatus) {
     setSelectedProvince(id);
 
     setProvinceStatuses((currentStatuses) => ({
@@ -275,11 +298,54 @@ export default function HomeScreen() {
 
     setSession(null);
     setIsAuthenticated(false);
+    setProfileName('');
     setProvinceStatuses({});
     setTrips([]);
     setActiveTab('map');
     setSelectedProvince(null);
     setSelectedProfileTrip(null);
+  }
+
+  async function confirmDeleteAccount() {
+    try {
+      await deleteAccount();
+
+      await supabase.auth.signOut();
+
+      setSession(null);
+      setIsAuthenticated(false);
+      setProfileName('');
+      setProvinceStatuses({});
+      setTrips([]);
+      setActiveTab('map');
+      setSelectedProvince(null);
+      setSelectedProfileTrip(null);
+    } catch (error) {
+      console.log('Error deleting account:', error);
+
+      Alert.alert(
+        'No se pudo eliminar la cuenta',
+        'Inténtalo de nuevo en unos segundos.'
+      );
+    }
+  }
+
+  function handleDeleteAccount() {
+    Alert.alert(
+      'Eliminar cuenta',
+      'Esta acción borrará tu usuario, tus provincias, tus viajes y tus imágenes. No se puede deshacer.',
+      [
+        {
+          text: 'Cancelar',
+          style: 'cancel',
+        },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: confirmDeleteAccount,
+        },
+      ]
+    );
   }
 
   const visitedIds = Object.entries(provinceStatuses)
@@ -304,7 +370,9 @@ export default function HomeScreen() {
     })
   ).length;
 
-  const totalChallengesCount = challenges.length;  const headerContent =
+  const totalChallengesCount = challenges.length;
+
+  const headerContent =
     activeTab === 'map'
       ? {
           title: 'Mapa',
@@ -341,9 +409,7 @@ export default function HomeScreen() {
 
   if (!isAuthenticated) {
     return <AuthScreen onAuthSuccess={() => setIsAuthenticated(true)} />;
-  }
-
-  return (
+  }  return (
     <View style={styles.appBackground}>
       <ScrollView
         style={styles.screen}
@@ -380,11 +446,15 @@ export default function HomeScreen() {
             <>
               <View style={styles.profileCard}>
                 <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>P</Text>
+                  <Text style={styles.avatarText}>
+                    {(profileName || 'U').charAt(0).toUpperCase()}
+                  </Text>
                 </View>
 
                 <View>
-                  <Text style={styles.profileName}>Pablo</Text>
+                  <Text style={styles.profileName}>
+                    {profileName || 'Usuario'}
+                  </Text>
                   <Text style={styles.profileSubtitle}>Viajero por España</Text>
                 </View>
               </View>
@@ -435,7 +505,9 @@ export default function HomeScreen() {
                 <Text style={styles.profileChallengesNumber}>
                   {completedChallengesCount}/{totalChallengesCount}
                 </Text>
-              </View>              <View style={styles.profileTripsCard}>
+              </View>
+
+              <View style={styles.profileTripsCard}>
                 <View style={styles.profileTripsHeader}>
                   <View style={styles.profileTripsTitleBlock}>
                     <Text style={styles.profileTripsTitle}>Mis viajes</Text>
@@ -514,6 +586,15 @@ export default function HomeScreen() {
 
               <Pressable style={styles.logoutButton} onPress={handleLogout}>
                 <Text style={styles.logoutButtonText}>Cerrar sesión</Text>
+              </Pressable>
+
+              <Pressable
+                style={styles.deleteAccountButton}
+                onPress={handleDeleteAccount}
+              >
+                <Text style={styles.deleteAccountButtonText}>
+                  Eliminar cuenta
+                </Text>
               </Pressable>
             </>
           )}
@@ -637,7 +718,9 @@ export default function HomeScreen() {
             </Text>
           </Pressable>
         </View>
-      </View>      <Modal
+      </View>
+
+      <Modal
         visible={!!selectedProfileTrip}
         transparent
         animationType="fade"
@@ -723,9 +806,7 @@ export default function HomeScreen() {
       </Modal>
     </View>
   );
-}
-
-const styles = StyleSheet.create({
+}const styles = StyleSheet.create({
   loadingScreen: {
     flex: 1,
     backgroundColor: appColors.black,
@@ -1040,6 +1121,21 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   logoutButtonText: {
+    color: appColors.home,
+    fontSize: 16,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  deleteAccountButton: {
+    backgroundColor: appColors.surface,
+    borderWidth: 1,
+    borderColor: appColors.home,
+    borderRadius: 20,
+    paddingVertical: 15,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  deleteAccountButtonText: {
     color: appColors.home,
     fontSize: 16,
     fontWeight: '900',
