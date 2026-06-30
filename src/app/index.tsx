@@ -30,6 +30,10 @@ import {
 } from '../lib/provinceStatuses';
 import { supabase } from '../lib/supabase';
 import {
+  isSupabaseTripImageUrl,
+  uploadTripImage,
+} from '../lib/tripImages';
+import {
   createTrip,
   deleteTripFromSupabase,
   fetchTrips,
@@ -217,55 +221,80 @@ export default function HomeScreen() {
     }
   }
 
-  async function addTrip(trip: Trip) {
-    if (!session?.user.id) {
-      setTrips((currentTrips) => [trip, ...currentTrips]);
-      return;
-    }
-
-    try {
-      const savedTrip = await createTrip(session.user.id, trip);
-
-      setTrips((currentTrips) => [savedTrip, ...currentTrips]);
-    } catch (error) {
-      console.log('Error creating trip:', error);
-    }
+  async function getSavedTripImageUri(imageUri?: string) {
+  if (!imageUri || !session?.user.id) {
+    return imageUri;
   }
 
+  if (isSupabaseTripImageUrl(imageUri)) {
+    return imageUri;
+  }
+
+  return uploadTripImage(session.user.id, imageUri);
+}
+
+  async function addTrip(trip: Trip) {
+  if (!session?.user.id) {
+    setTrips((currentTrips) => [trip, ...currentTrips]);
+    return;
+  }
+
+  try {
+    const savedImageUri = await getSavedTripImageUri(trip.imageUri);
+
+    const tripToSave: Trip = {
+      ...trip,
+      imageUri: savedImageUri,
+    };
+
+    const savedTrip = await createTrip(session.user.id, tripToSave);
+
+    setTrips((currentTrips) => [savedTrip, ...currentTrips]);
+  } catch (error) {
+    console.log('Error creating trip:', error);
+  }
+}
   async function updateTrip(updatedTrip: Trip) {
+  setTrips((currentTrips) =>
+    currentTrips.map((trip) =>
+      trip.id === updatedTrip.id ? updatedTrip : trip
+    )
+  );
+
+  setSelectedProfileTrip((currentTrip) =>
+    currentTrip?.id === updatedTrip.id ? updatedTrip : currentTrip
+  );
+
+  if (!session?.user.id) {
+    return;
+  }
+
+  try {
+    const savedImageUri = await getSavedTripImageUri(updatedTrip.imageUri);
+
+    const tripToSave: Trip = {
+      ...updatedTrip,
+      imageUri: savedImageUri,
+    };
+
+    const savedTrip = await updateTripInSupabase(
+      session.user.id,
+      tripToSave
+    );
+
     setTrips((currentTrips) =>
       currentTrips.map((trip) =>
-        trip.id === updatedTrip.id ? updatedTrip : trip
+        trip.id === savedTrip.id ? savedTrip : trip
       )
     );
 
     setSelectedProfileTrip((currentTrip) =>
-      currentTrip?.id === updatedTrip.id ? updatedTrip : currentTrip
+      currentTrip?.id === savedTrip.id ? savedTrip : currentTrip
     );
-
-    if (!session?.user.id) {
-      return;
-    }
-
-    try {
-      const savedTrip = await updateTripInSupabase(
-        session.user.id,
-        updatedTrip
-      );
-
-      setTrips((currentTrips) =>
-        currentTrips.map((trip) =>
-          trip.id === savedTrip.id ? savedTrip : trip
-        )
-      );
-
-      setSelectedProfileTrip((currentTrip) =>
-        currentTrip?.id === savedTrip.id ? savedTrip : currentTrip
-      );
-    } catch (error) {
-      console.log('Error updating trip:', error);
-    }
+  } catch (error) {
+    console.log('Error updating trip:', error);
   }
+}
 
   async function deleteTrip(tripId: string) {
     const tripToDelete = trips.find((trip) => trip.id === tripId);
@@ -304,9 +333,7 @@ export default function HomeScreen() {
     setActiveTab('map');
     setSelectedProvince(null);
     setSelectedProfileTrip(null);
-  }
-
-  async function confirmDeleteAccount() {
+  }  async function confirmDeleteAccount() {
     try {
       await deleteAccount();
 
@@ -409,7 +436,9 @@ export default function HomeScreen() {
 
   if (!isAuthenticated) {
     return <AuthScreen onAuthSuccess={() => setIsAuthenticated(true)} />;
-  }  return (
+  }
+
+  return (
     <View style={styles.appBackground}>
       <ScrollView
         style={styles.screen}
@@ -451,12 +480,19 @@ export default function HomeScreen() {
                   </Text>
                 </View>
 
-                <View>
+                <View style={styles.profileInfoBlock}>
                   <Text style={styles.profileName}>
                     {profileName || 'Usuario'}
                   </Text>
                   <Text style={styles.profileSubtitle}>Viajero por España</Text>
                 </View>
+
+                <Pressable
+                  style={styles.profileLogoutButton}
+                  onPress={handleLogout}
+                >
+                  <Text style={styles.profileLogoutButtonText}>Cerrar Sesión</Text>
+                </Pressable>
               </View>
 
               <View style={styles.completionCard}>
@@ -584,10 +620,6 @@ export default function HomeScreen() {
                 )}
               </View>
 
-              <Pressable style={styles.logoutButton} onPress={handleLogout}>
-                <Text style={styles.logoutButtonText}>Cerrar sesión</Text>
-              </Pressable>
-
               <Pressable
                 style={styles.deleteAccountButton}
                 onPress={handleDeleteAccount}
@@ -599,7 +631,7 @@ export default function HomeScreen() {
             </>
           )}
         </View>
-      </ScrollView>
+           </ScrollView>
 
       <View style={styles.bottomBarWrapper}>
         <View style={styles.tabBar}>
@@ -615,7 +647,6 @@ export default function HomeScreen() {
             >
               🗺️
             </Text>
-
             <Text
               style={[
                 styles.tabButtonText,
@@ -638,7 +669,6 @@ export default function HomeScreen() {
             >
               ☰
             </Text>
-
             <Text
               style={[
                 styles.tabButtonText,
@@ -661,7 +691,6 @@ export default function HomeScreen() {
             >
               ✈️
             </Text>
-
             <Text
               style={[
                 styles.tabButtonText,
@@ -684,7 +713,6 @@ export default function HomeScreen() {
             >
               🏆
             </Text>
-
             <Text
               style={[
                 styles.tabButtonText,
@@ -707,7 +735,6 @@ export default function HomeScreen() {
             >
               👤
             </Text>
-
             <Text
               style={[
                 styles.tabButtonText,
@@ -806,7 +833,9 @@ export default function HomeScreen() {
       </Modal>
     </View>
   );
-}const styles = StyleSheet.create({
+}
+
+const styles = StyleSheet.create({
   loadingScreen: {
     flex: 1,
     backgroundColor: appColors.black,
@@ -864,6 +893,9 @@ export default function HomeScreen() {
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
+  profileInfoBlock: {
+    flex: 1,
+  },
   profileName: {
     fontSize: 20,
     fontWeight: '900',
@@ -876,7 +908,20 @@ export default function HomeScreen() {
     marginTop: 2,
     fontFamily: appFonts.main,
   },
-  completionCard: {
+  profileLogoutButton: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  profileLogoutButtonText: {
+    color: appColors.text,
+    fontSize: 13,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },  completionCard: {
     backgroundColor: appColors.surface,
     borderRadius: 24,
     padding: 18,
@@ -1109,21 +1154,6 @@ export default function HomeScreen() {
     fontWeight: '800',
     textAlign: 'center',
     marginTop: 2,
-    fontFamily: appFonts.main,
-  },
-  logoutButton: {
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
-    borderWidth: 1,
-    borderColor: appColors.home,
-    borderRadius: 20,
-    paddingVertical: 15,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  logoutButtonText: {
-    color: appColors.home,
-    fontSize: 16,
-    fontWeight: '900',
     fontFamily: appFonts.main,
   },
   deleteAccountButton: {
