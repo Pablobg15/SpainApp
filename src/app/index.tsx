@@ -1,4 +1,5 @@
 import type { Session } from '@supabase/supabase-js';
+import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -14,6 +15,7 @@ import {
 import AppHeader from '../components/AppHeader';
 import AuthScreen from '../components/AuthScreen';
 import ChallengesScreen from '../components/ChallengesScreen';
+import FriendsScreen from '../components/FriendsScreen';
 import ProvincesScreen from '../components/ProvincesScreen';
 import SpainProvinceMap, {
   ProvinceStatus,
@@ -22,7 +24,13 @@ import TripsScreen, { type Trip } from '../components/TripsScreen';
 import { challenges } from '../data/challenges';
 import { provinces as allProvinces } from '../data/provinces';
 import { deleteAccount } from '../lib/account';
-import { fetchProfileName } from '../lib/profiles';
+import {
+  uploadProfileImage
+} from '../lib/profileImages';
+import {
+  fetchProfile,
+  updateProfileAvatar,
+} from '../lib/profiles';
 import {
   fetchProvinceStatuses,
   removeProvinceStatus,
@@ -41,7 +49,13 @@ import {
 } from '../lib/trips';
 import { appColors, appFonts } from '../theme';
 
-type ActiveTab = 'map' | 'provinces' | 'trips' | 'challenges' | 'profile';
+type ActiveTab =
+  | 'map'
+  | 'provinces'
+  | 'trips'
+  | 'challenges'
+  | 'friends'
+  | 'profile';
 
 function fromIsoDate(isoDate: string) {
   const [year, month, day] = isoDate.split('-').map(Number);
@@ -73,6 +87,10 @@ export default function HomeScreen() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [profileName, setProfileName] = useState('');
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | undefined>(
+    undefined
+  );
+  const [isProfileImageLoading, setIsProfileImageLoading] = useState(false);
 
   const [provinceStatuses, setProvinceStatuses] = useState<
     Record<string, ProvinceStatus>
@@ -109,6 +127,7 @@ export default function HomeScreen() {
         setTrips([]);
         setSelectedProfileTrip(null);
         setProfileName('');
+        setProfileAvatarUrl(undefined);
       }
     });
 
@@ -126,22 +145,22 @@ export default function HomeScreen() {
       }
 
       try {
-        const [savedStatuses, savedTrips, savedProfileName] =
-          await Promise.all([
-            fetchProvinceStatuses(session.user.id),
-            fetchTrips(session.user.id),
-            fetchProfileName(session.user.id),
-          ]);
+        const [savedStatuses, savedTrips, savedProfile] = await Promise.all([
+          fetchProvinceStatuses(session.user.id),
+          fetchTrips(session.user.id),
+          fetchProfile(session.user.id),
+        ]);
 
         if (isMounted) {
           setProvinceStatuses(savedStatuses);
           setTrips(savedTrips);
           setProfileName(
-            savedProfileName ||
+            savedProfile.name ||
               session.user.user_metadata?.name ||
               session.user.email?.split('@')[0] ||
               'Usuario'
           );
+          setProfileAvatarUrl(savedProfile.avatarUrl);
         }
       } catch (error) {
         console.log('Error loading user data:', error);
@@ -222,79 +241,80 @@ export default function HomeScreen() {
   }
 
   async function getSavedTripImageUri(imageUri?: string) {
-  if (!imageUri || !session?.user.id) {
-    return imageUri;
-  }
+    if (!imageUri || !session?.user.id) {
+      return imageUri;
+    }
 
-  if (isSupabaseTripImageUrl(imageUri)) {
-    return imageUri;
-  }
+    if (isSupabaseTripImageUrl(imageUri)) {
+      return imageUri;
+    }
 
-  return uploadTripImage(session.user.id, imageUri);
-}
+    return uploadTripImage(session.user.id, imageUri);
+  }
 
   async function addTrip(trip: Trip) {
-  if (!session?.user.id) {
-    setTrips((currentTrips) => [trip, ...currentTrips]);
-    return;
+    if (!session?.user.id) {
+      setTrips((currentTrips) => [trip, ...currentTrips]);
+      return;
+    }
+
+    try {
+      const savedImageUri = await getSavedTripImageUri(trip.imageUri);
+
+      const tripToSave: Trip = {
+        ...trip,
+        imageUri: savedImageUri,
+      };
+
+      const savedTrip = await createTrip(session.user.id, tripToSave);
+
+      setTrips((currentTrips) => [savedTrip, ...currentTrips]);
+    } catch (error) {
+      console.log('Error creating trip:', error);
+    }
   }
 
-  try {
-    const savedImageUri = await getSavedTripImageUri(trip.imageUri);
-
-    const tripToSave: Trip = {
-      ...trip,
-      imageUri: savedImageUri,
-    };
-
-    const savedTrip = await createTrip(session.user.id, tripToSave);
-
-    setTrips((currentTrips) => [savedTrip, ...currentTrips]);
-  } catch (error) {
-    console.log('Error creating trip:', error);
-  }
-}
   async function updateTrip(updatedTrip: Trip) {
-  setTrips((currentTrips) =>
-    currentTrips.map((trip) =>
-      trip.id === updatedTrip.id ? updatedTrip : trip
-    )
-  );
-
-  setSelectedProfileTrip((currentTrip) =>
-    currentTrip?.id === updatedTrip.id ? updatedTrip : currentTrip
-  );
-
-  if (!session?.user.id) {
-    return;
-  }
-
-  try {
-    const savedImageUri = await getSavedTripImageUri(updatedTrip.imageUri);
-
-    const tripToSave: Trip = {
-      ...updatedTrip,
-      imageUri: savedImageUri,
-    };
-
-    const savedTrip = await updateTripInSupabase(
-      session.user.id,
-      tripToSave
-    );
-
     setTrips((currentTrips) =>
       currentTrips.map((trip) =>
-        trip.id === savedTrip.id ? savedTrip : trip
+        trip.id === updatedTrip.id ? updatedTrip : trip
       )
     );
 
     setSelectedProfileTrip((currentTrip) =>
-      currentTrip?.id === savedTrip.id ? savedTrip : currentTrip
+      currentTrip?.id === updatedTrip.id ? updatedTrip : currentTrip
     );
-  } catch (error) {
-    console.log('Error updating trip:', error);
+
+    if (!session?.user.id) {
+      return;
+    }
+
+    try {
+      const savedImageUri = await getSavedTripImageUri(updatedTrip.imageUri);
+
+      const tripToSave: Trip = {
+        ...updatedTrip,
+        imageUri: savedImageUri,
+      };
+
+      const savedTrip = await updateTripInSupabase(
+        session.user.id,
+        tripToSave
+      );
+
+      setTrips((currentTrips) =>
+        currentTrips.map((trip) =>
+          trip.id === savedTrip.id ? savedTrip : trip
+        )
+      );
+
+      setSelectedProfileTrip((currentTrip) =>
+        currentTrip?.id === savedTrip.id ? savedTrip : currentTrip
+      );
+    } catch (error) {
+      console.log('Error updating trip:', error);
+    }
   }
-}
 
   async function deleteTrip(tripId: string) {
     const tripToDelete = trips.find((trip) => trip.id === tripId);
@@ -322,12 +342,71 @@ export default function HomeScreen() {
     }
   }
 
+  async function handleChangeProfileImage() {
+  if (!session?.user.id || isProfileImageLoading) {
+    return;
+  }
+
+  try {
+    const permissionResult =
+      await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (!permissionResult.granted) {
+      Alert.alert(
+        'Permiso necesario',
+        'Necesitamos acceso a tus fotos para cambiar la imagen de perfil.'
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.85,
+    });
+
+    if (result.canceled || !result.assets[0]?.uri) {
+      return;
+    }
+
+    setIsProfileImageLoading(true);
+
+    const selectedImageUri = result.assets[0].uri;
+
+    setProfileAvatarUrl(selectedImageUri);
+
+    const savedAvatarUrl = await uploadProfileImage(
+      session.user.id,
+      selectedImageUri
+    );
+
+    await updateProfileAvatar(session.user.id, savedAvatarUrl);
+
+    setProfileAvatarUrl(`${savedAvatarUrl}?t=${Date.now()}`);
+
+    Alert.alert('Foto actualizada', 'Tu foto de perfil se ha cambiado.');
+  } catch (error) {
+    console.log('Error changing profile image:', error);
+
+    Alert.alert(
+      'No se pudo cambiar la foto',
+      error instanceof Error
+        ? error.message
+        : 'Inténtalo de nuevo en unos segundos.'
+    );
+  } finally {
+    setIsProfileImageLoading(false);
+  }
+}
+
   async function handleLogout() {
     await supabase.auth.signOut();
 
     setSession(null);
     setIsAuthenticated(false);
     setProfileName('');
+    setProfileAvatarUrl(undefined);
     setProvinceStatuses({});
     setTrips([]);
     setActiveTab('map');
@@ -342,6 +421,7 @@ export default function HomeScreen() {
       setSession(null);
       setIsAuthenticated(false);
       setProfileName('');
+      setProfileAvatarUrl(undefined);
       setProvinceStatuses({});
       setTrips([]);
       setActiveTab('map');
@@ -420,10 +500,15 @@ export default function HomeScreen() {
                 title: 'Retos',
                 subtitle: 'Completa rutas, comunidades y objetivos viajeros.',
               }
-            : {
-                title: 'Perfil',
-                subtitle: 'Tu resumen personal de viajes por España.',
-              };
+            : activeTab === 'friends'
+              ? {
+                  title: 'Amigos',
+                  subtitle: 'Busca usuarios y comparte tu progreso.',
+                }
+              : {
+                  title: 'Perfil',
+                  subtitle: 'Tu resumen personal de viajes por España.',
+                };
 
   if (isAuthLoading) {
     return (
@@ -471,27 +556,53 @@ export default function HomeScreen() {
             />
           ) : activeTab === 'challenges' ? (
             <ChallengesScreen provinceStatuses={provinceStatuses} />
+          ) : activeTab === 'friends' && session?.user.id ? (
+            <FriendsScreen userId={session.user.id} />
           ) : (
             <>
               <View style={styles.profileCard}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>
-                    {(profileName || 'U').charAt(0).toUpperCase()}
-                  </Text>
-                </View>
+                <Pressable
+                  style={styles.avatarButton}
+                  onPress={handleChangeProfileImage}
+                  disabled={isProfileImageLoading}
+                >
+                  {profileAvatarUrl ? (
+                    <Image
+                      source={{ uri: profileAvatarUrl }}
+                      style={styles.avatarImage}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={styles.avatar}>
+                      <Text style={styles.avatarText}>
+                        {(profileName || 'U').charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+
+                  <View style={styles.avatarEditBadge}>
+                    {isProfileImageLoading ? (
+                      <ActivityIndicator color={appColors.black} size="small" />
+                    ) : (
+                      <Text style={styles.avatarEditBadgeText}>＋</Text>
+                    )}
+                  </View>
+                </Pressable>
 
                 <View style={styles.profileInfoBlock}>
                   <Text style={styles.profileName}>
                     {profileName || 'Usuario'}
                   </Text>
-                  <Text style={styles.profileSubtitle}>Viajero por España</Text>
+                  <Text style={styles.profileSubtitle}>
+                    Toca la foto para cambiarla
+                  </Text>
                 </View>
 
                 <Pressable
                   style={styles.profileLogoutButton}
                   onPress={handleLogout}
                 >
-                  <Text style={styles.profileLogoutButtonText}>Cerrar Sesión</Text>
+                  <Text style={styles.profileLogoutButtonText}>Salir</Text>
                 </Pressable>
               </View>
 
@@ -631,7 +742,7 @@ export default function HomeScreen() {
             </>
           )}
         </View>
-           </ScrollView>
+      </ScrollView>
 
       <View style={styles.bottomBarWrapper}>
         <View style={styles.tabBar}>
@@ -725,6 +836,28 @@ export default function HomeScreen() {
 
           <Pressable
             style={styles.tabButton}
+            onPress={() => setActiveTab('friends')}
+          >
+            <Text
+              style={[
+                styles.tabIcon,
+                activeTab === 'friends' && styles.tabIconActive,
+              ]}
+            >
+              👥
+            </Text>
+            <Text
+              style={[
+                styles.tabButtonText,
+                activeTab === 'friends' && styles.tabButtonTextActive,
+              ]}
+            >
+              Amigos
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={styles.tabButton}
             onPress={() => setActiveTab('profile')}
           >
             <Text
@@ -745,9 +878,7 @@ export default function HomeScreen() {
             </Text>
           </Pressable>
         </View>
-      </View>
-
-      <Modal
+      </View>      <Modal
         visible={!!selectedProfileTrip}
         transparent
         animationType="fade"
@@ -879,18 +1010,50 @@ const styles = StyleSheet.create({
     gap: 14,
     marginBottom: 16,
   },
+  avatarButton: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    position: 'relative',
+  },
   avatar: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     backgroundColor: appColors.white,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  avatarImage: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    backgroundColor: appColors.surfaceSoft,
   },
   avatarText: {
     color: appColors.black,
     fontSize: 24,
     fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: appColors.white,
+    borderWidth: 2,
+    borderColor: appColors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarEditBadgeText: {
+    color: appColors.black,
+    fontSize: 17,
+    fontWeight: '900',
+    lineHeight: 20,
     fontFamily: appFonts.main,
   },
   profileInfoBlock: {
@@ -921,7 +1084,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '900',
     fontFamily: appFonts.main,
-  },  completionCard: {
+  },
+  completionCard: {
     backgroundColor: appColors.surface,
     borderRadius: 24,
     padding: 18,
@@ -1184,7 +1348,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingTop: 10,
     paddingBottom: 16,
-    paddingHorizontal: 8,
+    paddingHorizontal: 4,
   },
   tabButton: {
     flex: 1,
@@ -1193,14 +1357,14 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   tabIcon: {
-    fontSize: 21,
+    fontSize: 19,
     opacity: 0.45,
   },
   tabIconActive: {
     opacity: 1,
   },
   tabButtonText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     color: appColors.textMuted,
     fontFamily: appFonts.main,

@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -10,459 +14,556 @@ import {
 import { supabase } from '../lib/supabase';
 import { appColors, appFonts } from '../theme';
 
-type AuthMode = 'login' | 'register';
-
 type AuthScreenProps = {
   onAuthSuccess: () => void;
 };
 
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-}
-
-function getAuthErrorMessage(message: string) {
-  const normalizedMessage = message.toLowerCase();
-
-  if (normalizedMessage.includes('invalid login credentials')) {
-    return 'Email o contraseña incorrectos.';
-  }
-
-  if (normalizedMessage.includes('email not confirmed')) {
-    return 'Tienes que confirmar tu email antes de entrar.';
-  }
-
-  if (normalizedMessage.includes('user already registered')) {
-    return 'Ya existe una cuenta con este email.';
-  }
-
-  if (normalizedMessage.includes('password')) {
-    return 'La contraseña no cumple los requisitos.';
-  }
-
-  return 'Ha ocurrido un error. Inténtalo de nuevo.';
-}
-
 export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
-  const [mode, setMode] = useState<AuthMode>('login');
-
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [repeatPassword, setRepeatPassword] = useState('');
 
-  const [errorMessage, setErrorMessage] = useState('');
-  const [infoMessage, setInfoMessage] = useState('');
+  const [resetEmail, setResetEmail] = useState('');
+  const [isResetModalVisible, setIsResetModalVisible] = useState(false);
+
   const [isLoading, setIsLoading] = useState(false);
+  const [isResetLoading, setIsResetLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [resetErrorMessage, setResetErrorMessage] = useState('');
+  const [resetSuccessMessage, setResetSuccessMessage] = useState('');
 
-  const isRegister = mode === 'register';
-
-  const canContinue = isRegister
-    ? Boolean(
-        name.trim() &&
-          email.trim() &&
-          password.trim() &&
-          repeatPassword.trim() &&
-          !isLoading
-      )
-    : Boolean(email.trim() && password.trim() && !isLoading);
-
-  function changeMode(nextMode: AuthMode) {
-    setMode(nextMode);
-    setErrorMessage('');
-    setInfoMessage('');
-    setPassword('');
-    setRepeatPassword('');
-  }
-
-  async function submitAuth() {
-    setErrorMessage('');
-    setInfoMessage('');
-
-    const cleanEmail = email.trim().toLowerCase();
+  async function handleSubmit() {
     const cleanName = name.trim();
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password.trim();
 
-    if (!isValidEmail(cleanEmail)) {
-      setErrorMessage('Introduce un email válido.');
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    if (!cleanEmail || !cleanPassword) {
+      setErrorMessage('Escribe tu email y tu contraseña.');
       return;
     }
 
-    if (password.length < 6) {
+    if (isRegisterMode && !cleanName) {
+      setErrorMessage('Escribe tu nombre.');
+      return;
+    }
+
+    if (cleanPassword.length < 6) {
       setErrorMessage('La contraseña debe tener al menos 6 caracteres.');
       return;
     }
 
-    if (isRegister && password !== repeatPassword) {
-      setErrorMessage('Las contraseñas no coinciden.');
+    setIsLoading(true);
+
+    if (isRegisterMode) {
+      const { error } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password: cleanPassword,
+        options: {
+          data: {
+            name: cleanName,
+          },
+        },
+      });
+
+      setIsLoading(false);
+
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
+      setSuccessMessage('Cuenta creada correctamente.');
+      onAuthSuccess();
       return;
     }
 
-    try {
-      setIsLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({
+      email: cleanEmail,
+      password: cleanPassword,
+    });
 
-      if (isRegister) {
-        const { data, error } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-          options: {
-            data: {
-              name: cleanName,
-            },
-          },
-        });
+    setIsLoading(false);
 
-        if (error) {
-          setErrorMessage(getAuthErrorMessage(error.message));
-          return;
-        }
-
-        if (!data.session) {
-          setInfoMessage(
-            'Cuenta creada. Revisa tu email para confirmar la cuenta antes de entrar.'
-          );
-          return;
-        }
-
-        onAuthSuccess();
-        return;
-      }
-
-      const { error } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password,
-      });
-
-      if (error) {
-        setErrorMessage(getAuthErrorMessage(error.message));
-        return;
-      }
-
-      onAuthSuccess();
-    } catch {
-      setErrorMessage('No se pudo conectar con Supabase.');
-    } finally {
-      setIsLoading(false);
+    if (error) {
+      setErrorMessage(error.message);
+      return;
     }
+
+    onAuthSuccess();
+  }
+
+  function openResetModal() {
+    setResetEmail(email.trim().toLowerCase());
+    setResetErrorMessage('');
+    setResetSuccessMessage('');
+    setIsResetModalVisible(true);
+  }
+
+  function closeResetModal() {
+    if (isResetLoading) {
+      return;
+    }
+
+    setIsResetModalVisible(false);
+    setResetErrorMessage('');
+    setResetSuccessMessage('');
+  }
+
+  async function handleForgotPassword() {
+    const cleanEmail = resetEmail.trim().toLowerCase();
+
+    if (!cleanEmail) {
+      setResetErrorMessage('Escribe tu email para recuperar la contraseña.');
+      return;
+    }
+
+    setIsResetLoading(true);
+    setResetErrorMessage('');
+    setResetSuccessMessage('');
+
+    const redirectTo =
+      Platform.OS === 'web' && typeof window !== 'undefined'
+        ? window.location.origin
+        : undefined;
+
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo,
+    });
+
+    setIsResetLoading(false);
+
+    if (error) {
+      setResetErrorMessage(error.message);
+      return;
+    }
+
+    setResetSuccessMessage(
+      'Te hemos enviado un email para recuperar tu contraseña.'
+    );
+  }
+
+  function toggleMode() {
+    setIsRegisterMode((currentValue) => !currentValue);
+    setErrorMessage('');
+    setSuccessMessage('');
   }
 
   return (
-    <View style={styles.screen}>
-      <View style={styles.card}>
-        <View style={styles.brandBlock}>
-          <View style={styles.logoMark}>
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.card}>
+          <View style={styles.logoCircle}>
             <Text style={styles.logoText}>S</Text>
           </View>
 
-          <Text style={styles.eyebrow}>Spain Travel Map</Text>
-
-          <Text style={styles.title}>España</Text>
+          <Text style={styles.title}>
+            {isRegisterMode ? 'Crea tu cuenta' : 'Bienvenido'}
+          </Text>
 
           <Text style={styles.subtitle}>
-            Marca provincias, guarda viajes y completa retos por España.
+            {isRegisterMode
+              ? 'Empieza a guardar tus viajes por España.'
+              : 'Entra para ver tu mapa, viajes y retos.'}
           </Text>
-        </View>
 
-        <View style={styles.modeSwitch}>
-          <Pressable
-            style={[
-              styles.modeButton,
-              mode === 'login' && styles.modeButtonActive,
-            ]}
-            onPress={() => changeMode('login')}
-          >
-            <Text
-              style={[
-                styles.modeButtonText,
-                mode === 'login' && styles.modeButtonTextActive,
-              ]}
-            >
-              Entrar
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={[
-              styles.modeButton,
-              mode === 'register' && styles.modeButtonActive,
-            ]}
-            onPress={() => changeMode('register')}
-          >
-            <Text
-              style={[
-                styles.modeButtonText,
-                mode === 'register' && styles.modeButtonTextActive,
-              ]}
-            >
-              Crear cuenta
-            </Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.form}>
-          {isRegister ? (
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Nombre</Text>
+          {isRegisterMode ? (
+            <View style={styles.inputBlock}>
+              <Text style={styles.inputLabel}>Nombre</Text>
 
               <TextInput
+                style={styles.input}
                 value={name}
                 onChangeText={setName}
-                placeholder="Ej. Pablo"
+                placeholder="Tu nombre"
                 placeholderTextColor={appColors.textMuted}
-                style={styles.input}
+                autoCapitalize="words"
+                editable={!isLoading}
               />
             </View>
           ) : null}
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Email</Text>
+          <View style={styles.inputBlock}>
+            <Text style={styles.inputLabel}>Email</Text>
 
             <TextInput
+              style={styles.input}
               value={email}
               onChangeText={setEmail}
-              placeholder="tuemail@gmail.com"
+              placeholder="tu@email.com"
               placeholderTextColor={appColors.textMuted}
-              style={styles.input}
               autoCapitalize="none"
+              autoCorrect={false}
               keyboardType="email-address"
+              editable={!isLoading}
             />
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Contraseña</Text>
+          <View style={styles.inputBlock}>
+            <Text style={styles.inputLabel}>Contraseña</Text>
 
             <TextInput
+              style={styles.input}
               value={password}
               onChangeText={setPassword}
               placeholder="Mínimo 6 caracteres"
               placeholderTextColor={appColors.textMuted}
-              style={styles.input}
               secureTextEntry
+              editable={!isLoading}
             />
-          </View>          {isRegister ? (
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Repetir contraseña</Text>
-
-              <TextInput
-                value={repeatPassword}
-                onChangeText={setRepeatPassword}
-                placeholder="Repite tu contraseña"
-                placeholderTextColor={appColors.textMuted}
-                style={styles.input}
-                secureTextEntry
-              />
-            </View>
-          ) : null}
+          </View>
 
           {errorMessage ? (
-            <View style={styles.errorCard}>
-              <Text style={styles.errorText}>{errorMessage}</Text>
+            <View style={styles.messageBoxError}>
+              <Text style={styles.messageTextError}>{errorMessage}</Text>
             </View>
           ) : null}
 
-          {infoMessage ? (
-            <View style={styles.infoCard}>
-              <Text style={styles.infoText}>{infoMessage}</Text>
+          {successMessage ? (
+            <View style={styles.messageBoxSuccess}>
+              <Text style={styles.messageTextSuccess}>{successMessage}</Text>
             </View>
           ) : null}
 
           <Pressable
             style={[
-              styles.submitButton,
-              !canContinue && styles.submitButtonDisabled,
+              styles.primaryButton,
+              isLoading && styles.primaryButtonDisabled,
             ]}
-            onPress={submitAuth}
-            disabled={!canContinue}
+            onPress={handleSubmit}
+            disabled={isLoading}
           >
             {isLoading ? (
               <ActivityIndicator color={appColors.black} />
             ) : (
-              <Text
-                style={[
-                  styles.submitButtonText,
-                  !canContinue && styles.submitButtonTextDisabled,
-                ]}
-              >
-                {isRegister ? 'Crear cuenta' : 'Entrar'}
+              <Text style={styles.primaryButtonText}>
+                {isRegisterMode ? 'Crear cuenta' : 'Entrar'}
               </Text>
             )}
           </Pressable>
 
-          <Text style={styles.helperText}>
-            {isRegister
-              ? 'Al crear cuenta, tus viajes y provincias se guardarán en Supabase.'
-              : 'Accede para recuperar tu mapa y tus viajes.'}
-          </Text>
-        </View>
-      </View>
-    </View>
-  );
-}
+          {!isRegisterMode ? (
+            <Pressable
+              style={styles.forgotPasswordButton}
+              onPress={openResetModal}
+              disabled={isLoading}
+            >
+              <Text style={styles.forgotPasswordText}>
+                He olvidado mi contraseña
+              </Text>
+            </Pressable>
+          ) : null}
 
-const styles = StyleSheet.create({
+          <Pressable
+            style={styles.secondaryButton}
+            onPress={toggleMode}
+            disabled={isLoading}
+          >
+            <Text style={styles.secondaryButtonText}>
+              {isRegisterMode
+                ? 'Ya tengo cuenta'
+                : 'No tengo cuenta, registrarme'}
+            </Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+
+      <Modal
+        visible={isResetModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeResetModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleBlock}>
+                <Text style={styles.modalTitle}>Recuperar contraseña</Text>
+                <Text style={styles.modalSubtitle}>
+                  Escribe tu email y te enviaremos un enlace para cambiarla.
+                </Text>
+              </View>
+
+              <Pressable
+                style={styles.modalCloseButton}
+                onPress={closeResetModal}
+                disabled={isResetLoading}
+              >
+                <Text style={styles.modalCloseButtonText}>×</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.inputBlock}>
+              <Text style={styles.inputLabel}>Email</Text>
+
+              <TextInput
+                style={styles.input}
+                value={resetEmail}
+                onChangeText={setResetEmail}
+                placeholder="tu@email.com"
+                placeholderTextColor={appColors.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                editable={!isResetLoading}
+              />
+            </View>
+
+            {resetErrorMessage ? (
+              <View style={styles.messageBoxError}>
+                <Text style={styles.messageTextError}>
+                  {resetErrorMessage}
+                </Text>
+              </View>
+            ) : null}
+
+            {resetSuccessMessage ? (
+              <View style={styles.messageBoxSuccess}>
+                <Text style={styles.messageTextSuccess}>
+                  {resetSuccessMessage}
+                </Text>
+              </View>
+            ) : null}
+
+            <Pressable
+              style={[
+                styles.primaryButton,
+                isResetLoading && styles.primaryButtonDisabled,
+              ]}
+              onPress={handleForgotPassword}
+              disabled={isResetLoading}
+            >
+              {isResetLoading ? (
+                <ActivityIndicator color={appColors.black} />
+              ) : (
+                <Text style={styles.primaryButtonText}>Enviar email</Text>
+              )}
+            </Pressable>
+
+            <Pressable
+              style={styles.modalSecondaryButton}
+              onPress={closeResetModal}
+              disabled={isResetLoading}
+            >
+              <Text style={styles.modalSecondaryButtonText}>Cancelar</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    </KeyboardAvoidingView>
+  );
+}const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: appColors.black,
+    backgroundColor: appColors.background,
+  },
+  container: {
+    minHeight: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 20,
+    padding: 22,
   },
   card: {
     width: '100%',
     maxWidth: 430,
     backgroundColor: appColors.surface,
-    borderRadius: 32,
+    borderRadius: 30,
     borderWidth: 1,
     borderColor: appColors.border,
-    padding: 22,
-    gap: 22,
+    padding: 24,
   },
-  brandBlock: {
-    alignItems: 'center',
-    gap: 8,
-    paddingTop: 8,
-  },
-  logoMark: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
+  logoCircle: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
     backgroundColor: appColors.white,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 6,
+    marginBottom: 18,
   },
   logoText: {
     color: appColors.black,
-    fontSize: 31,
+    fontSize: 30,
     fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  eyebrow: {
-    color: appColors.textMuted,
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 1.4,
-    textTransform: 'uppercase',
     fontFamily: appFonts.main,
   },
   title: {
     color: appColors.text,
-    fontSize: 46,
-    lineHeight: 52,
+    fontSize: 32,
     fontWeight: '900',
+    marginBottom: 8,
     fontFamily: appFonts.main,
   },
   subtitle: {
     color: appColors.textSecondary,
-    fontSize: 15,
-    lineHeight: 22,
-    textAlign: 'center',
-    maxWidth: 320,
+    fontSize: 16,
+    lineHeight: 23,
+    marginBottom: 24,
     fontFamily: appFonts.main,
   },
-  modeSwitch: {
-    flexDirection: 'row',
-    backgroundColor: appColors.surfaceSoft,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    padding: 4,
-    gap: 4,
+  inputBlock: {
+    marginBottom: 14,
   },
-  modeButton: {
-    flex: 1,
-    borderRadius: 14,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  modeButtonActive: {
-    backgroundColor: appColors.white,
-  },
-  modeButtonText: {
-    color: appColors.textMuted,
-    fontSize: 15,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  modeButtonTextActive: {
-    color: appColors.black,
-  },
-  form: {
-    gap: 15,
-  },
-  inputGroup: {
-    gap: 8,
-  },
-  label: {
-    color: appColors.textSecondary,
+  inputLabel: {
+    color: appColors.text,
     fontSize: 14,
     fontWeight: '900',
+    marginBottom: 8,
     fontFamily: appFonts.main,
   },
   input: {
     backgroundColor: appColors.surfaceSoft,
     borderWidth: 1,
     borderColor: appColors.border,
-    borderRadius: 17,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     color: appColors.text,
     fontSize: 16,
-    paddingHorizontal: 15,
-    paddingVertical: 14,
-    outlineStyle: 'none' as any,
+    fontWeight: '700',
     fontFamily: appFonts.main,
   },
-  errorCard: {
+  messageBoxError: {
     backgroundColor: 'rgba(239, 68, 68, 0.12)',
     borderWidth: 1,
     borderColor: appColors.home,
     borderRadius: 16,
-    padding: 13,
+    padding: 12,
+    marginBottom: 14,
   },
-  errorText: {
+  messageTextError: {
     color: appColors.home,
     fontSize: 14,
-    lineHeight: 20,
     fontWeight: '800',
+    lineHeight: 20,
     fontFamily: appFonts.main,
   },
-  infoCard: {
+  messageBoxSuccess: {
     backgroundColor: 'rgba(34, 197, 94, 0.12)',
     borderWidth: 1,
     borderColor: appColors.visited,
     borderRadius: 16,
-    padding: 13,
+    padding: 12,
+    marginBottom: 14,
   },
-  infoText: {
+  messageTextSuccess: {
     color: appColors.visited,
     fontSize: 14,
-    lineHeight: 20,
     fontWeight: '800',
+    lineHeight: 20,
     fontFamily: appFonts.main,
   },
-  submitButton: {
+  primaryButton: {
     backgroundColor: appColors.white,
-    borderRadius: 18,
-    paddingVertical: 15,
+    borderRadius: 20,
+    paddingVertical: 16,
     alignItems: 'center',
-    marginTop: 2,
-    minHeight: 51,
-    justifyContent: 'center',
+    marginTop: 4,
   },
-  submitButtonDisabled: {
-    backgroundColor: appColors.surfaceSoft,
+  primaryButtonDisabled: {
+    opacity: 0.65,
   },
-  submitButtonText: {
+  primaryButtonText: {
     color: appColors.black,
     fontSize: 16,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  submitButtonTextDisabled: {
-    color: appColors.textMuted,
+  forgotPasswordButton: {
+    marginTop: 14,
+    alignItems: 'center',
   },
-  helperText: {
-    color: appColors.textMuted,
-    fontSize: 13,
-    lineHeight: 19,
-    textAlign: 'center',
+  forgotPasswordText: {
+    color: appColors.textSecondary,
+    fontSize: 14,
+    fontWeight: '800',
+    fontFamily: appFonts.main,
+    textDecorationLine: 'underline',
+  },
+  secondaryButton: {
+    marginTop: 18,
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
+    color: appColors.text,
+    fontSize: 15,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.82)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 22,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 430,
+    backgroundColor: appColors.surface,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    padding: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 14,
+    marginBottom: 18,
+  },
+  modalTitleBlock: {
+    flex: 1,
+  },
+  modalTitle: {
+    color: appColors.text,
+    fontSize: 24,
+    fontWeight: '900',
+    marginBottom: 6,
+    fontFamily: appFonts.main,
+  },
+  modalSubtitle: {
+    color: appColors.textSecondary,
+    fontSize: 15,
+    lineHeight: 21,
+    fontFamily: appFonts.main,
+  },
+  modalCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalCloseButtonText: {
+    color: appColors.text,
+    fontSize: 24,
+    fontWeight: '700',
+    lineHeight: 25,
+    fontFamily: appFonts.main,
+  },
+  modalSecondaryButton: {
+    marginTop: 14,
+    alignItems: 'center',
+  },
+  modalSecondaryButtonText: {
+    color: appColors.textSecondary,
+    fontSize: 15,
+    fontWeight: '900',
     fontFamily: appFonts.main,
   },
 });
