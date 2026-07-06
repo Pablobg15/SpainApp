@@ -15,6 +15,7 @@ import {
 import AppHeader from '../components/AppHeader';
 import AuthScreen from '../components/AuthScreen';
 import ChallengesScreen from '../components/ChallengesScreen';
+import ErrorState from '../components/ErrorState';
 import FriendsScreen from '../components/FriendsScreen';
 import ProvincesScreen from '../components/ProvincesScreen';
 import SpainProvinceMap, {
@@ -25,12 +26,10 @@ import { challenges } from '../data/challenges';
 import { provinces as allProvinces } from '../data/provinces';
 import { deleteAccount } from '../lib/account';
 import {
-  uploadProfileImage
+  isSupabaseProfileImageUrl,
+  uploadProfileImage,
 } from '../lib/profileImages';
-import {
-  fetchProfile,
-  updateProfileAvatar,
-} from '../lib/profiles';
+import { fetchProfile, updateProfileAvatar } from '../lib/profiles';
 import {
   fetchProvinceStatuses,
   removeProvinceStatus,
@@ -91,6 +90,8 @@ export default function HomeScreen() {
     undefined
   );
   const [isProfileImageLoading, setIsProfileImageLoading] = useState(false);
+  const [isUserDataLoading, setIsUserDataLoading] = useState(false);
+  const [loadErrorMessage, setLoadErrorMessage] = useState('');
 
   const [provinceStatuses, setProvinceStatuses] = useState<
     Record<string, ProvinceStatus>
@@ -103,6 +104,47 @@ export default function HomeScreen() {
 
   const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>('map');
+
+  async function loadUserData() {
+    if (!session?.user.id) {
+      return;
+    }
+
+    try {
+      setIsUserDataLoading(true);
+      setLoadErrorMessage('');
+
+      const [savedStatuses, savedTrips, savedProfile] = await Promise.all([
+        fetchProvinceStatuses(session.user.id),
+        fetchTrips(session.user.id),
+        fetchProfile(session.user.id),
+      ]);
+
+      setProvinceStatuses(savedStatuses);
+      setTrips(savedTrips);
+      setProfileName(
+        savedProfile.name ||
+          session.user.user_metadata?.name ||
+          session.user.email?.split('@')[0] ||
+          'Usuario'
+      );
+      setProfileAvatarUrl(savedProfile.avatarUrl);
+    } catch (error) {
+      console.log('Error loading user data:', error);
+
+      setProfileName(
+        session.user.user_metadata?.name ||
+          session.user.email?.split('@')[0] ||
+          'Usuario'
+      );
+
+      setLoadErrorMessage(
+        'No se pudieron cargar tus provincias, viajes o perfil. Revisa la conexión e inténtalo de nuevo.'
+      );
+    } finally {
+      setIsUserDataLoading(false);
+    }
+  }
 
   useEffect(() => {
     async function loadSession() {
@@ -128,6 +170,8 @@ export default function HomeScreen() {
         setSelectedProfileTrip(null);
         setProfileName('');
         setProfileAvatarUrl(undefined);
+        setLoadErrorMessage('');
+        setIsUserDataLoading(false);
       }
     });
 
@@ -137,49 +181,7 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadUserData() {
-      if (!session?.user.id) {
-        return;
-      }
-
-      try {
-        const [savedStatuses, savedTrips, savedProfile] = await Promise.all([
-          fetchProvinceStatuses(session.user.id),
-          fetchTrips(session.user.id),
-          fetchProfile(session.user.id),
-        ]);
-
-        if (isMounted) {
-          setProvinceStatuses(savedStatuses);
-          setTrips(savedTrips);
-          setProfileName(
-            savedProfile.name ||
-              session.user.user_metadata?.name ||
-              session.user.email?.split('@')[0] ||
-              'Usuario'
-          );
-          setProfileAvatarUrl(savedProfile.avatarUrl);
-        }
-      } catch (error) {
-        console.log('Error loading user data:', error);
-
-        if (isMounted) {
-          setProfileName(
-            session.user.user_metadata?.name ||
-              session.user.email?.split('@')[0] ||
-              'Usuario'
-          );
-        }
-      }
-    }
-
     loadUserData();
-
-    return () => {
-      isMounted = false;
-    };
   }, [session?.user.id]);
 
   async function setProvinceStatus(id: string, status: ProvinceStatus) {
@@ -196,8 +198,13 @@ export default function HomeScreen() {
 
     try {
       await upsertProvinceStatus(session.user.id, id, status);
+      setLoadErrorMessage('');
     } catch (error) {
       console.log('Error saving province status:', error);
+
+      setLoadErrorMessage(
+        'No se pudo guardar el estado de la provincia. Inténtalo de nuevo.'
+      );
     }
   }
 
@@ -214,8 +221,13 @@ export default function HomeScreen() {
 
     try {
       await removeProvinceStatus(session.user.id, id);
+      setLoadErrorMessage('');
     } catch (error) {
       console.log('Error removing province status:', error);
+
+      setLoadErrorMessage(
+        'No se pudo borrar el estado de la provincia. Inténtalo de nuevo.'
+      );
     }
   }
 
@@ -269,8 +281,13 @@ export default function HomeScreen() {
       const savedTrip = await createTrip(session.user.id, tripToSave);
 
       setTrips((currentTrips) => [savedTrip, ...currentTrips]);
+      setLoadErrorMessage('');
     } catch (error) {
       console.log('Error creating trip:', error);
+
+      setLoadErrorMessage(
+        'No se pudo guardar el viaje. Revisa la conexión e inténtalo de nuevo.'
+      );
     }
   }
 
@@ -297,10 +314,7 @@ export default function HomeScreen() {
         imageUri: savedImageUri,
       };
 
-      const savedTrip = await updateTripInSupabase(
-        session.user.id,
-        tripToSave
-      );
+      const savedTrip = await updateTripInSupabase(session.user.id, tripToSave);
 
       setTrips((currentTrips) =>
         currentTrips.map((trip) =>
@@ -311,12 +325,14 @@ export default function HomeScreen() {
       setSelectedProfileTrip((currentTrip) =>
         currentTrip?.id === savedTrip.id ? savedTrip : currentTrip
       );
+
+      setLoadErrorMessage('');
     } catch (error) {
       console.log('Error updating trip:', error);
-    }
-  }
 
-  async function deleteTrip(tripId: string) {
+      setLoadErrorMessage('No se pudo actualizar el viaje. Inténtalo de nuevo.');
+    }
+  }  async function deleteTrip(tripId: string) {
     const tripToDelete = trips.find((trip) => trip.id === tripId);
 
     setTrips((currentTrips) =>
@@ -333,72 +349,75 @@ export default function HomeScreen() {
 
     try {
       await deleteTripFromSupabase(session.user.id, tripId);
+      setLoadErrorMessage('');
     } catch (error) {
       console.log('Error deleting trip:', error);
 
       if (tripToDelete) {
         setTrips((currentTrips) => [tripToDelete, ...currentTrips]);
       }
+
+      setLoadErrorMessage('No se pudo eliminar el viaje. Inténtalo de nuevo.');
     }
   }
 
   async function handleChangeProfileImage() {
-  if (!session?.user.id || isProfileImageLoading) {
-    return;
-  }
+    if (!session?.user.id || isProfileImageLoading) {
+      return;
+    }
 
-  try {
-    const permissionResult =
-      await ImagePicker.requestMediaLibraryPermissionsAsync();
+    try {
+      const permissionResult =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
 
-    if (!permissionResult.granted) {
+      if (!permissionResult.granted) {
+        Alert.alert(
+          'Permiso necesario',
+          'Necesitamos acceso a tus fotos para cambiar la imagen de perfil.'
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+
+      if (result.canceled || !result.assets[0]?.uri) {
+        return;
+      }
+
+      setIsProfileImageLoading(true);
+
+      const selectedImageUri = result.assets[0].uri;
+
+      setProfileAvatarUrl(selectedImageUri);
+
+      const savedAvatarUrl = isSupabaseProfileImageUrl(selectedImageUri)
+        ? selectedImageUri
+        : await uploadProfileImage(session.user.id, selectedImageUri);
+
+      await updateProfileAvatar(session.user.id, savedAvatarUrl);
+
+      setProfileAvatarUrl(`${savedAvatarUrl}?t=${Date.now()}`);
+      setLoadErrorMessage('');
+
+      Alert.alert('Foto actualizada', 'Tu foto de perfil se ha cambiado.');
+    } catch (error) {
+      console.log('Error changing profile image:', error);
+
       Alert.alert(
-        'Permiso necesario',
-        'Necesitamos acceso a tus fotos para cambiar la imagen de perfil.'
+        'No se pudo cambiar la foto',
+        error instanceof Error
+          ? error.message
+          : 'Inténtalo de nuevo en unos segundos.'
       );
-      return;
+    } finally {
+      setIsProfileImageLoading(false);
     }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.85,
-    });
-
-    if (result.canceled || !result.assets[0]?.uri) {
-      return;
-    }
-
-    setIsProfileImageLoading(true);
-
-    const selectedImageUri = result.assets[0].uri;
-
-    setProfileAvatarUrl(selectedImageUri);
-
-    const savedAvatarUrl = await uploadProfileImage(
-      session.user.id,
-      selectedImageUri
-    );
-
-    await updateProfileAvatar(session.user.id, savedAvatarUrl);
-
-    setProfileAvatarUrl(`${savedAvatarUrl}?t=${Date.now()}`);
-
-    Alert.alert('Foto actualizada', 'Tu foto de perfil se ha cambiado.');
-  } catch (error) {
-    console.log('Error changing profile image:', error);
-
-    Alert.alert(
-      'No se pudo cambiar la foto',
-      error instanceof Error
-        ? error.message
-        : 'Inténtalo de nuevo en unos segundos.'
-    );
-  } finally {
-    setIsProfileImageLoading(false);
   }
-}
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -412,7 +431,11 @@ export default function HomeScreen() {
     setActiveTab('map');
     setSelectedProvince(null);
     setSelectedProfileTrip(null);
-  }  async function confirmDeleteAccount() {
+    setLoadErrorMessage('');
+    setIsUserDataLoading(false);
+  }
+
+  async function confirmDeleteAccount() {
     try {
       await deleteAccount();
 
@@ -427,6 +450,8 @@ export default function HomeScreen() {
       setActiveTab('map');
       setSelectedProvince(null);
       setSelectedProfileTrip(null);
+      setLoadErrorMessage('');
+      setIsUserDataLoading(false);
     } catch (error) {
       console.log('Error deleting account:', error);
 
@@ -536,7 +561,19 @@ export default function HomeScreen() {
             subtitle={headerContent.subtitle}
           />
 
-          {activeTab === 'map' ? (
+          {isUserDataLoading ? (
+            <View style={styles.loadingCard}>
+              <ActivityIndicator color={appColors.white} />
+              <Text style={styles.loadingCardText}>Cargando tus datos...</Text>
+            </View>
+          ) : loadErrorMessage ? (
+            <ErrorState
+              title="No se pudieron cargar tus datos"
+              message={loadErrorMessage}
+              buttonText="Reintentar"
+              onRetry={loadUserData}
+            />
+          ) : activeTab === 'map' ? (
             <SpainProvinceMap
               provinceStatuses={provinceStatuses}
               onSelectProvince={setSelectedProvince}
@@ -635,9 +672,7 @@ export default function HomeScreen() {
                   <Text style={styles.summaryNumber}>{wishlistCount}</Text>
                   <Text style={styles.summaryLabel}>Quiero ir</Text>
                 </View>
-              </View>
-
-              <View style={styles.profileChallengesCard}>
+              </View>              <View style={styles.profileChallengesCard}>
                 <View style={styles.profileChallengesTextBlock}>
                   <Text style={styles.profileChallengesTitle}>
                     Retos completados
@@ -878,7 +913,9 @@ export default function HomeScreen() {
             </Text>
           </Pressable>
         </View>
-      </View>      <Modal
+      </View>
+
+      <Modal
         visible={!!selectedProfileTrip}
         transparent
         animationType="fade"
@@ -964,9 +1001,7 @@ export default function HomeScreen() {
       </Modal>
     </View>
   );
-}
-
-const styles = StyleSheet.create({
+}const styles = StyleSheet.create({
   loadingScreen: {
     flex: 1,
     backgroundColor: appColors.black,
@@ -975,6 +1010,21 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   loadingText: {
+    color: appColors.textSecondary,
+    fontSize: 15,
+    fontWeight: '800',
+    fontFamily: appFonts.main,
+  },
+  loadingCard: {
+    backgroundColor: appColors.surface,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+    gap: 12,
+  },
+  loadingCardText: {
     color: appColors.textSecondary,
     fontSize: 15,
     fontWeight: '800',

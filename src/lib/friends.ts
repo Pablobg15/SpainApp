@@ -5,6 +5,7 @@ export type FriendRequestStatus = 'pending' | 'accepted' | 'rejected';
 export type PublicProfile = {
   id: string;
   name: string;
+  avatarUrl?: string;
 };
 
 export type FriendRequest = {
@@ -24,6 +25,20 @@ type FriendRequestRow = {
   status: FriendRequestStatus;
   created_at: string;
 };
+
+type PublicProfileRow = {
+  id: string;
+  name: string | null;
+  avatar_url: string | null;
+};
+
+function mapPublicProfile(row: PublicProfileRow): PublicProfile {
+  return {
+    id: row.id,
+    name: row.name?.trim() || 'Usuario',
+    avatarUrl: row.avatar_url ?? undefined,
+  };
+}
 
 function mapFriendRequest(
   row: FriendRequestRow,
@@ -49,18 +64,17 @@ async function fetchProfilesByIds(profileIds: string[]) {
 
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, name')
+    .select('id, name, avatar_url')
     .in('id', uniqueProfileIds);
 
   if (error) {
     throw error;
   }
 
-  return (data ?? []).reduce<Record<string, PublicProfile>>((profiles, row) => {
-    profiles[row.id] = {
-      id: row.id,
-      name: row.name ?? 'Usuario',
-    };
+  return ((data ?? []) as PublicProfileRow[]).reduce<
+    Record<string, PublicProfile>
+  >((profiles, row) => {
+    profiles[row.id] = mapPublicProfile(row);
 
     return profiles;
   }, {});
@@ -75,7 +89,7 @@ export async function searchProfiles(currentUserId: string, searchText: string) 
 
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, name')
+    .select('id, name, avatar_url')
     .neq('id', currentUserId)
     .ilike('name', `%${cleanSearchText}%`)
     .limit(20);
@@ -84,10 +98,7 @@ export async function searchProfiles(currentUserId: string, searchText: string) 
     throw error;
   }
 
-  return (data ?? []).map((profile) => ({
-    id: profile.id,
-    name: profile.name ?? 'Usuario',
-  })) as PublicProfile[];
+  return ((data ?? []) as PublicProfileRow[]).map(mapPublicProfile);
 }
 
 export async function sendFriendRequest(
