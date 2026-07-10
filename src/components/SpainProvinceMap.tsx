@@ -1,9 +1,15 @@
 import { geoMercator, geoPath } from 'd3-geo';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import Svg, { G, Path, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, {
+  Circle,
+  G,
+  Path,
+  Rect,
+  Text as SvgText,
+} from 'react-native-svg';
 import mapData from '../data/maps/spain-provinces.json';
 import { provinces } from '../data/provinces';
-import { appColors, appFonts } from '../theme';
+import { appFonts } from '../theme';
 
 export type ProvinceStatus = 'visited' | 'home' | 'wishlist';
 
@@ -19,6 +25,22 @@ type GeoFeature = {
   type: string;
   properties: Record<string, any>;
   geometry: any;
+};
+
+const atlasColors = {
+  paper: '#E9DFC8',
+  paperDark: '#D8C9A8',
+  ink: '#3B3024',
+  inkSoft: '#6F614E',
+  border: '#9E8F72',
+  sea: '#D7E0D6',
+  seaLight: '#E5ECDF',
+  seaDark: '#C8D2C3',
+  pending: '#EFE5CC',
+  visited: '#B9D6B1',
+  home: '#E3A39A',
+  wishlist: '#E4CF82',
+  selected: '#3B3024',
 };
 
 function normalizeText(value: string) {
@@ -106,18 +128,18 @@ function createFeatureCollection(features: GeoFeature[]) {
 
 function getProvinceFill(status?: ProvinceStatus) {
   if (status === 'home') {
-    return appColors.home;
+    return atlasColors.home;
   }
 
   if (status === 'visited') {
-    return appColors.visited;
+    return atlasColors.visited;
   }
 
   if (status === 'wishlist') {
-    return appColors.wishlist;
+    return atlasColors.wishlist;
   }
 
-  return appColors.pending;
+  return atlasColors.pending;
 }
 
 function getStatusLabel(status?: ProvinceStatus) {
@@ -134,9 +156,7 @@ function getStatusLabel(status?: ProvinceStatus) {
   }
 
   return 'Sin marcar';
-}
-
-export default function SpainProvinceMap({
+}export default function SpainProvinceMap({
   provinceStatuses,
   onSelectProvince,
   onSetProvinceStatus,
@@ -158,21 +178,27 @@ export default function SpainProvinceMap({
     (feature) => !canaryIds.includes(getProvinceIdFromFeature(feature))
   );
 
-  const width = 360;
-  const height = 430;
+  const width = 390;
+  const height = 510;
+
+  const visitedCount = Object.values(safeProvinceStatuses).filter(
+    (status) => status === 'visited' || status === 'home'
+  ).length;
+
+  const progress = Math.round((visitedCount / provinces.length) * 100);
 
   const mainProjection = geoMercator().fitExtent(
     [
-      [12, 14],
-      [348, 330],
+      [12, 64],
+      [378, 395],
     ],
     createFeatureCollection(mainFeatures) as any
   );
 
   const canaryProjection = geoMercator().fitExtent(
     [
-      [30, 358],
-      [154, 414],
+      [42, 434],
+      [176, 494],
     ],
     createFeatureCollection(canaryFeatures) as any
   );
@@ -221,11 +247,21 @@ export default function SpainProvinceMap({
         key={`${provinceId}-${index}`}
         onPress={() => onSelectProvince(provinceId)}
       >
+        {isSelected ? (
+          <Path
+            d={path}
+            fill="transparent"
+            stroke={atlasColors.selected}
+            strokeWidth={6}
+            opacity={0.45}
+          />
+        ) : null}
+
         <Path
           d={path}
           fill={getProvinceFill(provinceStatus)}
-          stroke={isSelected ? appColors.white : '#3A3A3A'}
-          strokeWidth={isSelected ? 2.2 : 1}
+          stroke={isSelected ? atlasColors.selected : atlasColors.border}
+          strokeWidth={isSelected ? 2.2 : 0.9}
         />
       </G>
     );
@@ -234,18 +270,27 @@ export default function SpainProvinceMap({
   return (
     <View style={styles.wrapper}>
       <View style={styles.mapCard}>
-        <View style={styles.mapInfoRow}>
-          <View style={styles.mapInfoTextBlock}>
-            <Text style={styles.mapInfoTitle}>Mapa de provincias</Text>
-
-            <Text style={styles.mapInfoSubtitle}>
-              Toca una provincia para marcarla.
+        <View style={styles.atlasHeader}>
+          <View style={styles.atlasTitleBlock}>
+            <Text style={styles.atlasEyebrow}>Atlas personal</Text>
+            <Text style={styles.atlasTitle}>ESPAÑA</Text>
+            <Text style={styles.atlasSubtitle}>
+              Provincias visitadas y pendientes
             </Text>
           </View>
 
-          <View style={styles.mapPill}>
-            <Text style={styles.mapPillText}>50</Text>
+          <View style={styles.atlasProgressBox}>
+            <Text style={styles.atlasProgressNumber}>{progress}%</Text>
+            <Text style={styles.atlasProgressLabel}>
+              {visitedCount}/{provinces.length}
+            </Text>
           </View>
+        </View>
+
+        <View style={styles.atlasProgressBar}>
+          <View
+            style={[styles.atlasProgressFill, { width: `${progress}%` }]}
+          />
         </View>
 
         <View style={styles.legendRow}>
@@ -265,28 +310,89 @@ export default function SpainProvinceMap({
           </View>
         </View>
 
+        <View style={styles.mapHintCard}>
+          <Text style={styles.mapHintText}>
+            Toca una provincia para cambiar su estado.
+          </Text>
+        </View>
+
         <View style={styles.mapCanvas}>
-          <Svg viewBox={`0 0 ${width} ${height}`} width="100%" height={460}>
+          <Svg viewBox={`0 0 ${width} ${height}`} width={width} height={height}>
             <Rect
-              x={18}
-              y={342}
-              width={150}
-              height={82}
-              rx={18}
-              fill={appColors.surfaceSoft}
-              stroke={appColors.border}
-              strokeWidth={1}
+              x={0}
+              y={0}
+              width={width}
+              height={height}
+              fill={atlasColors.sea}
+            />
+
+            <Circle
+              cx={64}
+              cy={180}
+              r={135}
+              fill={atlasColors.seaLight}
+              opacity={0.55}
+            />
+
+            <Circle
+              cx={328}
+              cy={250}
+              r={105}
+              fill={atlasColors.seaDark}
+              opacity={0.4}
+            />
+
+            <Circle
+              cx={205}
+              cy={515}
+              r={150}
+              fill={atlasColors.seaLight}
+              opacity={0.45}
             />
 
             <SvgText
-              x={34}
-              y={362}
-              fontSize={11}
+              x={24}
+              y={38}
+              fontSize={20}
               fontWeight="700"
-              fill={appColors.textMuted}
+              fill={atlasColors.ink}
               fontFamily={appFonts.main}
             >
-              Canarias
+              España
+            </SvgText>
+
+            <SvgText
+              x={25}
+              y={57}
+              fontSize={9}
+              fontWeight="700"
+              fill={atlasColors.inkSoft}
+              fontFamily={appFonts.main}
+            >
+              mapa de provincias
+            </SvgText>
+
+            <Rect
+              x={24}
+              y={424}
+              width={162}
+              height={74}
+              rx={10}
+              fill={atlasColors.pending}
+              opacity={0.78}
+              stroke={atlasColors.border}
+              strokeWidth={0.9}
+            />
+
+            <SvgText
+              x={39}
+              y={444}
+              fontSize={10}
+              fontWeight="700"
+              fill={atlasColors.inkSoft}
+              fontFamily={appFonts.main}
+            >
+              Islas Canarias
             </SvgText>
 
             <G>
@@ -321,7 +427,9 @@ export default function SpainProvinceMap({
                 >
                   <Text style={styles.closeButtonText}>×</Text>
                 </Pressable>
-              </View>              <View style={styles.optionsColumn}>
+              </View>
+
+              <View style={styles.optionsColumn}>
                 <Pressable
                   style={[
                     styles.optionButton,
@@ -331,16 +439,7 @@ export default function SpainProvinceMap({
                   onPress={() => chooseStatus('home')}
                 >
                   <View style={[styles.optionDot, styles.homeDot]} />
-
-                  <Text
-                    style={[
-                      styles.optionText,
-                      selectedProvinceStatus === 'home' &&
-                        styles.optionTextActive,
-                    ]}
-                  >
-                    Vivo aquí
-                  </Text>
+                  <Text style={styles.optionText}>Vivo aquí</Text>
                 </Pressable>
 
                 <Pressable
@@ -352,16 +451,7 @@ export default function SpainProvinceMap({
                   onPress={() => chooseStatus('visited')}
                 >
                   <View style={[styles.optionDot, styles.visitedDot]} />
-
-                  <Text
-                    style={[
-                      styles.optionText,
-                      selectedProvinceStatus === 'visited' &&
-                        styles.optionTextActive,
-                    ]}
-                  >
-                    He ido
-                  </Text>
+                  <Text style={styles.optionText}>He ido</Text>
                 </Pressable>
 
                 <Pressable
@@ -373,16 +463,7 @@ export default function SpainProvinceMap({
                   onPress={() => chooseStatus('wishlist')}
                 >
                   <View style={[styles.optionDot, styles.wishlistDot]} />
-
-                  <Text
-                    style={[
-                      styles.optionText,
-                      selectedProvinceStatus === 'wishlist' &&
-                        styles.optionTextActive,
-                    ]}
-                  >
-                    Quiero ir
-                  </Text>
+                  <Text style={styles.optionText}>Quiero ir</Text>
                 </Pressable>
               </View>
 
@@ -395,56 +476,87 @@ export default function SpainProvinceMap({
       </View>
     </View>
   );
-}
-
-const styles = StyleSheet.create({
+}const styles = StyleSheet.create({
   wrapper: {
     gap: 16,
   },
   mapCard: {
-    backgroundColor: appColors.surface,
+    backgroundColor: atlasColors.paper,
     borderRadius: 28,
     padding: 16,
     borderWidth: 1,
-    borderColor: appColors.border,
+    borderColor: atlasColors.border,
     gap: 14,
     overflow: 'hidden',
   },
-  mapInfoRow: {
+  atlasHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 12,
   },
-  mapInfoTextBlock: {
+  atlasTitleBlock: {
     flex: 1,
   },
-  mapInfoTitle: {
-    color: appColors.text,
-    fontSize: 22,
+  atlasEyebrow: {
+    color: atlasColors.inkSoft,
+    fontSize: 12,
     fontWeight: '900',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    marginBottom: 3,
     fontFamily: appFonts.main,
-    marginBottom: 4,
   },
-  mapInfoSubtitle: {
-    color: appColors.textSecondary,
+  atlasTitle: {
+    color: atlasColors.ink,
+    fontSize: 34,
+    fontWeight: '900',
+    letterSpacing: 1.8,
+    lineHeight: 38,
+    fontFamily: appFonts.main,
+  },
+  atlasSubtitle: {
+    color: atlasColors.inkSoft,
     fontSize: 14,
-    lineHeight: 20,
+    fontWeight: '700',
+    marginTop: 4,
     fontFamily: appFonts.main,
   },
-  mapPill: {
-    width: 46,
-    height: 34,
-    borderRadius: 999,
-    backgroundColor: appColors.white,
+  atlasProgressBox: {
+    backgroundColor: 'rgba(255, 248, 230, 0.78)',
+    borderWidth: 1,
+    borderColor: atlasColors.border,
+    borderRadius: 16,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
     alignItems: 'center',
-    justifyContent: 'center',
+    minWidth: 70,
   },
-  mapPillText: {
-    color: appColors.black,
-    fontSize: 15,
+  atlasProgressNumber: {
+    color: atlasColors.ink,
+    fontSize: 20,
     fontWeight: '900',
     fontFamily: appFonts.main,
+  },
+  atlasProgressLabel: {
+    color: atlasColors.inkSoft,
+    fontSize: 12,
+    fontWeight: '900',
+    marginTop: 1,
+    fontFamily: appFonts.main,
+  },
+  atlasProgressBar: {
+    height: 10,
+    backgroundColor: atlasColors.paperDark,
+    borderRadius: 999,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 48, 36, 0.12)',
+  },
+  atlasProgressFill: {
+    height: '100%',
+    backgroundColor: atlasColors.visited,
+    borderRadius: 999,
   },
   legendRow: {
     flexDirection: 'row',
@@ -455,9 +567,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
-    backgroundColor: appColors.surfaceSoft,
+    backgroundColor: 'rgba(255, 248, 230, 0.62)',
     borderWidth: 1,
-    borderColor: appColors.border,
+    borderColor: 'rgba(59, 48, 36, 0.14)',
     borderRadius: 999,
     paddingVertical: 7,
     paddingHorizontal: 10,
@@ -466,42 +578,62 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 48, 36, 0.2)',
   },
   legendDotVisited: {
-    backgroundColor: appColors.visited,
+    backgroundColor: atlasColors.visited,
   },
   legendDotHome: {
-    backgroundColor: appColors.home,
+    backgroundColor: atlasColors.home,
   },
   legendDotWishlist: {
-    backgroundColor: appColors.wishlist,
+    backgroundColor: atlasColors.wishlist,
   },
   legendText: {
-    color: appColors.textSecondary,
+    color: atlasColors.inkSoft,
+    fontSize: 12,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  mapHintCard: {
+    backgroundColor: 'rgba(255, 248, 230, 0.62)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 48, 36, 0.14)',
+    borderRadius: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  mapHintText: {
+    color: atlasColors.inkSoft,
     fontSize: 12,
     fontWeight: '800',
+    lineHeight: 17,
     fontFamily: appFonts.main,
   },
   mapCanvas: {
     position: 'relative',
-    backgroundColor: appColors.black,
-    borderRadius: 24,
+    height: 560,
+    backgroundColor: atlasColors.sea,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: appColors.border,
+    borderColor: atlasColors.border,
     overflow: 'hidden',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   popupCard: {
     position: 'absolute',
     left: 14,
     right: 14,
     bottom: 14,
-    backgroundColor: appColors.surface,
-    borderRadius: 24,
+    backgroundColor: '#F6EBD1',
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: appColors.border,
+    borderColor: atlasColors.border,
     padding: 15,
     gap: 13,
+    zIndex: 5,
   },
   popupTopRow: {
     flexDirection: 'row',
@@ -513,7 +645,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   popupEyebrow: {
-    color: appColors.textMuted,
+    color: atlasColors.inkSoft,
     fontSize: 11,
     fontWeight: '900',
     letterSpacing: 1,
@@ -522,30 +654,31 @@ const styles = StyleSheet.create({
     fontFamily: appFonts.main,
   },
   popupTitle: {
-    color: appColors.text,
+    color: atlasColors.ink,
     fontSize: 24,
     fontWeight: '900',
     lineHeight: 29,
     fontFamily: appFonts.main,
   },
   popupSubtitle: {
-    color: appColors.textSecondary,
+    color: atlasColors.inkSoft,
     fontSize: 14,
     marginTop: 4,
+    fontWeight: '800',
     fontFamily: appFonts.main,
   },
   closeButton: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: appColors.surfaceSoft,
+    backgroundColor: atlasColors.paperDark,
     borderWidth: 1,
-    borderColor: appColors.border,
+    borderColor: atlasColors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
   closeButtonText: {
-    color: appColors.text,
+    color: atlasColors.ink,
     fontSize: 23,
     fontWeight: '700',
     lineHeight: 24,
@@ -555,9 +688,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   optionButton: {
-    backgroundColor: appColors.surfaceSoft,
+    backgroundColor: 'rgba(255, 248, 230, 0.7)',
     borderWidth: 1,
-    borderColor: appColors.border,
+    borderColor: 'rgba(59, 48, 36, 0.16)',
     borderRadius: 16,
     paddingVertical: 12,
     paddingHorizontal: 13,
@@ -566,39 +699,39 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   optionButtonActive: {
-    borderColor: appColors.white,
+    borderColor: atlasColors.ink,
+    backgroundColor: '#FFF7E4',
   },
   optionDot: {
     width: 12,
     height: 12,
     borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 48, 36, 0.18)',
   },
   homeDot: {
-    backgroundColor: appColors.home,
+    backgroundColor: atlasColors.home,
   },
   visitedDot: {
-    backgroundColor: appColors.visited,
+    backgroundColor: atlasColors.visited,
   },
   wishlistDot: {
-    backgroundColor: appColors.wishlist,
+    backgroundColor: atlasColors.wishlist,
   },
   optionText: {
-    color: appColors.textSecondary,
+    color: atlasColors.ink,
     fontSize: 15,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  optionTextActive: {
-    color: appColors.text,
-  },
   clearButton: {
-    backgroundColor: appColors.white,
+    backgroundColor: atlasColors.ink,
     borderRadius: 16,
     paddingVertical: 13,
     alignItems: 'center',
   },
   clearButtonText: {
-    color: appColors.black,
+    color: '#FFF7E4',
     fontSize: 15,
     fontWeight: '900',
     fontFamily: appFonts.main,
