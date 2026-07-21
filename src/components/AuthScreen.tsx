@@ -13,13 +13,11 @@ import {
 } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { appColors, appFonts } from '../theme';
+import LegalFooter from './LegalFooter';
 
-type AuthScreenProps = {
-  onAuthSuccess: () => void;
-};
-
-export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
+export default function AuthScreen() {
   const [isRegisterMode, setIsRegisterMode] = useState(false);
+
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -29,72 +27,83 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
 
   const [isLoading, setIsLoading] = useState(false);
   const [isResetLoading, setIsResetLoading] = useState(false);
+
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+
   const [resetErrorMessage, setResetErrorMessage] = useState('');
   const [resetSuccessMessage, setResetSuccessMessage] = useState('');
 
   async function handleSubmit() {
     const cleanName = name.trim();
     const cleanEmail = email.trim().toLowerCase();
-    const cleanPassword = password.trim();
 
     setErrorMessage('');
     setSuccessMessage('');
 
-    if (!cleanEmail || !cleanPassword) {
-      setErrorMessage('Escribe tu email y tu contraseña.');
+    if (isRegisterMode && cleanName.length < 2) {
+      setErrorMessage('Introduce tu nombre.');
       return;
     }
 
-    if (isRegisterMode && !cleanName) {
-      setErrorMessage('Escribe tu nombre.');
+    if (!cleanEmail) {
+      setErrorMessage('Introduce tu email.');
       return;
     }
 
-    if (cleanPassword.length < 6) {
+    if (!password || password.length < 6) {
       setErrorMessage('La contraseña debe tener al menos 6 caracteres.');
       return;
     }
 
-    setIsLoading(true);
+    try {
+      setIsLoading(true);
 
-    if (isRegisterMode) {
-      const { error } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password: cleanPassword,
-        options: {
-          data: {
-            name: cleanName,
+      if (isRegisterMode) {
+        const { error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: {
+            data: {
+              name: cleanName,
+            },
           },
-        },
-      });
+        });
 
-      setIsLoading(false);
+        if (error) {
+          throw error;
+        }
 
-      if (error) {
-        setErrorMessage(error.message);
-        return;
+        setSuccessMessage('Cuenta creada correctamente.');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        setSuccessMessage('Sesión iniciada correctamente.');
       }
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo completar la acción. Inténtalo de nuevo.';
 
-      setSuccessMessage('Cuenta creada correctamente.');
-      onAuthSuccess();
-      return;
+      setErrorMessage(message);
+    } finally {
+      setIsLoading(false);
     }
+  }
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email: cleanEmail,
-      password: cleanPassword,
-    });
-
-    setIsLoading(false);
-
-    if (error) {
-      setErrorMessage(error.message);
-      return;
-    }
-
-    onAuthSuccess();
+  function toggleAuthMode() {
+    setIsRegisterMode((currentMode) => !currentMode);
+    setErrorMessage('');
+    setSuccessMessage('');
+    setPassword('');
   }
 
   function openResetModal() {
@@ -105,10 +114,6 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
   }
 
   function closeResetModal() {
-    if (isResetLoading) {
-      return;
-    }
-
     setIsResetModalVisible(false);
     setResetErrorMessage('');
     setResetSuccessMessage('');
@@ -117,40 +122,43 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
   async function handleForgotPassword() {
     const cleanEmail = resetEmail.trim().toLowerCase();
 
-    if (!cleanEmail) {
-      setResetErrorMessage('Escribe tu email para recuperar la contraseña.');
-      return;
-    }
-
-    setIsResetLoading(true);
     setResetErrorMessage('');
     setResetSuccessMessage('');
 
-    const redirectTo =
-      Platform.OS === 'web' && typeof window !== 'undefined'
-        ? window.location.origin
-        : undefined;
-
-    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-      redirectTo,
-    });
-
-    setIsResetLoading(false);
-
-    if (error) {
-      setResetErrorMessage(error.message);
+    if (!cleanEmail) {
+      setResetErrorMessage('Introduce tu email.');
       return;
     }
 
-    setResetSuccessMessage(
-      'Te hemos enviado un email para recuperar tu contraseña.'
-    );
-  }
+    try {
+      setIsResetLoading(true);
 
-  function toggleMode() {
-    setIsRegisterMode((currentValue) => !currentValue);
-    setErrorMessage('');
-    setSuccessMessage('');
+      const redirectTo =
+        Platform.OS === 'web' && typeof window !== 'undefined'
+          ? window.location.origin
+          : undefined;
+
+      const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+        redirectTo,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setResetSuccessMessage(
+        'Te hemos enviado un email para restablecer la contraseña.'
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo enviar el email de recuperación.';
+
+      setResetErrorMessage(message);
+    } finally {
+      setIsResetLoading(false);
+    }
   }
 
   return (
@@ -159,124 +167,108 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView
-        contentContainerStyle={styles.container}
+        contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
-          <View style={styles.logoCircle}>
-            <Text style={styles.logoText}>S</Text>
+          <View style={styles.header}>
+            <Text style={styles.logo}>🧭</Text>
+
+            <Text style={styles.title}>SpainApp</Text>
+
+            <Text style={styles.subtitle}>
+              Marca las provincias que has visitado, guarda tus viajes y
+              comparte tu progreso.
+            </Text>
           </View>
 
-          <Text style={styles.title}>
-            {isRegisterMode ? 'Crea tu cuenta' : 'Bienvenido'}
-          </Text>
+          <View style={styles.form}>
+            {isRegisterMode ? (
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Nombre</Text>
 
-          <Text style={styles.subtitle}>
-            {isRegisterMode
-              ? 'Empieza a guardar tus viajes por España.'
-              : 'Entra para ver tu mapa, viajes y retos.'}
-          </Text>
+                <TextInput
+                  style={styles.input}
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Tu nombre"
+                  placeholderTextColor={appColors.textMuted}
+                  autoCapitalize="words"
+                />
+              </View>
+            ) : null}
 
-          {isRegisterMode ? (
-            <View style={styles.inputBlock}>
-              <Text style={styles.inputLabel}>Nombre</Text>
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Email</Text>
 
               <TextInput
                 style={styles.input}
-                value={name}
-                onChangeText={setName}
-                placeholder="Tu nombre"
+                value={email}
+                onChangeText={setEmail}
+                placeholder="tu@email.com"
                 placeholderTextColor={appColors.textMuted}
-                autoCapitalize="words"
-                editable={!isLoading}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
               />
             </View>
-          ) : null}
 
-          <View style={styles.inputBlock}>
-            <Text style={styles.inputLabel}>Email</Text>
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Contraseña</Text>
 
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-              placeholder="tu@email.com"
-              placeholderTextColor={appColors.textMuted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-              editable={!isLoading}
-            />
-          </View>
-
-          <View style={styles.inputBlock}>
-            <Text style={styles.inputLabel}>Contraseña</Text>
-
-            <TextInput
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Mínimo 6 caracteres"
-              placeholderTextColor={appColors.textMuted}
-              secureTextEntry
-              editable={!isLoading}
-            />
-          </View>
-
-          {errorMessage ? (
-            <View style={styles.messageBoxError}>
-              <Text style={styles.messageTextError}>{errorMessage}</Text>
+              <TextInput
+                style={styles.input}
+                value={password}
+                onChangeText={setPassword}
+                placeholder="Mínimo 6 caracteres"
+                placeholderTextColor={appColors.textMuted}
+                secureTextEntry
+                autoCapitalize="none"
+              />
             </View>
-          ) : null}
 
-          {successMessage ? (
-            <View style={styles.messageBoxSuccess}>
-              <Text style={styles.messageTextSuccess}>{successMessage}</Text>
-            </View>
-          ) : null}
+            {errorMessage ? (
+              <Text style={styles.errorMessage}>{errorMessage}</Text>
+            ) : null}
 
-          <Pressable
-            style={[
-              styles.primaryButton,
-              isLoading && styles.primaryButtonDisabled,
-            ]}
-            onPress={handleSubmit}
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <ActivityIndicator color={appColors.black} />
-            ) : (
-              <Text style={styles.primaryButtonText}>
-                {isRegisterMode ? 'Crear cuenta' : 'Entrar'}
-              </Text>
-            )}
-          </Pressable>
+            {successMessage ? (
+              <Text style={styles.successMessage}>{successMessage}</Text>
+            ) : null}
 
-          {!isRegisterMode ? (
             <Pressable
-              style={styles.forgotPasswordButton}
-              onPress={openResetModal}
+              style={[styles.mainButton, isLoading && styles.disabledButton]}
+              onPress={handleSubmit}
               disabled={isLoading}
             >
-              <Text style={styles.forgotPasswordText}>
-                He olvidado mi contraseña
+              {isLoading ? (
+                <ActivityIndicator color={appColors.black} />
+              ) : (
+                <Text style={styles.mainButtonText}>
+                  {isRegisterMode ? 'Crear cuenta' : 'Iniciar sesión'}
+                </Text>
+              )}
+            </Pressable>
+
+            {!isRegisterMode ? (
+              <Pressable style={styles.forgotButton} onPress={openResetModal}>
+                <Text style={styles.forgotButtonText}>
+                  ¿Has olvidado la contraseña?
+                </Text>
+              </Pressable>
+            ) : null}
+
+            <Pressable style={styles.switchButton} onPress={toggleAuthMode}>
+              <Text style={styles.switchButtonText}>
+                {isRegisterMode
+                  ? 'Ya tengo cuenta, iniciar sesión'
+                  : 'No tengo cuenta, registrarme'}
               </Text>
             </Pressable>
-          ) : null}
-
-          <Pressable
-            style={styles.secondaryButton}
-            onPress={toggleMode}
-            disabled={isLoading}
-          >
-            <Text style={styles.secondaryButtonText}>
-              {isRegisterMode
-                ? 'Ya tengo cuenta'
-                : 'No tengo cuenta, registrarme'}
-            </Text>
-          </Pressable>
+          </View>
         </View>
+
+        <LegalFooter />
       </ScrollView>
 
       <Modal
@@ -290,22 +282,19 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
             <View style={styles.modalHeader}>
               <View style={styles.modalTitleBlock}>
                 <Text style={styles.modalTitle}>Recuperar contraseña</Text>
+
                 <Text style={styles.modalSubtitle}>
-                  Escribe tu email y te enviaremos un enlace para cambiarla.
+                  Te enviaremos un email para restablecer tu contraseña.
                 </Text>
               </View>
 
-              <Pressable
-                style={styles.modalCloseButton}
-                onPress={closeResetModal}
-                disabled={isResetLoading}
-              >
+              <Pressable style={styles.modalCloseButton} onPress={closeResetModal}>
                 <Text style={styles.modalCloseButtonText}>×</Text>
               </Pressable>
             </View>
 
-            <View style={styles.inputBlock}>
-              <Text style={styles.inputLabel}>Email</Text>
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Email</Text>
 
               <TextInput
                 style={styles.input}
@@ -313,33 +302,24 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
                 onChangeText={setResetEmail}
                 placeholder="tu@email.com"
                 placeholderTextColor={appColors.textMuted}
+                keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
-                keyboardType="email-address"
-                editable={!isResetLoading}
               />
             </View>
 
             {resetErrorMessage ? (
-              <View style={styles.messageBoxError}>
-                <Text style={styles.messageTextError}>
-                  {resetErrorMessage}
-                </Text>
-              </View>
+              <Text style={styles.errorMessage}>{resetErrorMessage}</Text>
             ) : null}
 
             {resetSuccessMessage ? (
-              <View style={styles.messageBoxSuccess}>
-                <Text style={styles.messageTextSuccess}>
-                  {resetSuccessMessage}
-                </Text>
-              </View>
+              <Text style={styles.successMessage}>{resetSuccessMessage}</Text>
             ) : null}
 
             <Pressable
               style={[
-                styles.primaryButton,
-                isResetLoading && styles.primaryButtonDisabled,
+                styles.mainButton,
+                isResetLoading && styles.disabledButton,
               ]}
               onPress={handleForgotPassword}
               disabled={isResetLoading}
@@ -347,79 +327,70 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
               {isResetLoading ? (
                 <ActivityIndicator color={appColors.black} />
               ) : (
-                <Text style={styles.primaryButtonText}>Enviar email</Text>
+                <Text style={styles.mainButtonText}>Enviar email</Text>
               )}
-            </Pressable>
-
-            <Pressable
-              style={styles.modalSecondaryButton}
-              onPress={closeResetModal}
-              disabled={isResetLoading}
-            >
-              <Text style={styles.modalSecondaryButtonText}>Cancelar</Text>
             </Pressable>
           </View>
         </View>
       </Modal>
     </KeyboardAvoidingView>
   );
-}const styles = StyleSheet.create({
+}
+
+const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: appColors.background,
   },
-  container: {
-    minHeight: '100%',
-    alignItems: 'center',
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
     padding: 22,
+    gap: 18,
   },
   card: {
     width: '100%',
-    maxWidth: 430,
+    maxWidth: 460,
+    alignSelf: 'center',
     backgroundColor: appColors.surface,
     borderRadius: 30,
     borderWidth: 1,
     borderColor: appColors.border,
     padding: 24,
+    gap: 24,
   },
-  logoCircle: {
-    width: 66,
-    height: 66,
-    borderRadius: 33,
-    backgroundColor: appColors.white,
+  header: {
     alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 18,
+    gap: 8,
   },
-  logoText: {
-    color: appColors.black,
-    fontSize: 30,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
+  logo: {
+    fontSize: 54,
+    marginBottom: 4,
   },
   title: {
     color: appColors.text,
-    fontSize: 32,
+    fontSize: 38,
     fontWeight: '900',
-    marginBottom: 8,
+    textAlign: 'center',
     fontFamily: appFonts.main,
   },
   subtitle: {
     color: appColors.textSecondary,
-    fontSize: 16,
-    lineHeight: 23,
-    marginBottom: 24,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
     fontFamily: appFonts.main,
   },
-  inputBlock: {
-    marginBottom: 14,
+  form: {
+    gap: 15,
   },
-  inputLabel: {
+  inputGroup: {
+    gap: 8,
+  },
+  label: {
     color: appColors.text,
     fontSize: 14,
     fontWeight: '900',
-    marginBottom: 8,
     fontFamily: appFonts.main,
   },
   input: {
@@ -427,116 +398,107 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
     borderWidth: 1,
     borderColor: appColors.border,
     borderRadius: 18,
-    paddingHorizontal: 16,
+    paddingHorizontal: 15,
     paddingVertical: 14,
     color: appColors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 15,
     fontFamily: appFonts.main,
   },
-  messageBoxError: {
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
-    borderWidth: 1,
-    borderColor: appColors.home,
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 14,
-  },
-  messageTextError: {
-    color: appColors.home,
-    fontSize: 14,
-    fontWeight: '800',
-    lineHeight: 20,
-    fontFamily: appFonts.main,
-  },
-  messageBoxSuccess: {
-    backgroundColor: 'rgba(34, 197, 94, 0.12)',
-    borderWidth: 1,
-    borderColor: appColors.visited,
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 14,
-  },
-  messageTextSuccess: {
-    color: appColors.visited,
-    fontSize: 14,
-    fontWeight: '800',
-    lineHeight: 20,
-    fontFamily: appFonts.main,
-  },
-  primaryButton: {
+  mainButton: {
     backgroundColor: appColors.white,
-    borderRadius: 20,
-    paddingVertical: 16,
+    borderRadius: 18,
+    paddingVertical: 15,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
     marginTop: 4,
   },
-  primaryButtonDisabled: {
-    opacity: 0.65,
+  disabledButton: {
+    opacity: 0.72,
   },
-  primaryButtonText: {
+  mainButtonText: {
     color: appColors.black,
     fontSize: 16,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  forgotPasswordButton: {
-    marginTop: 14,
+  forgotButton: {
     alignItems: 'center',
+    paddingVertical: 4,
   },
-  forgotPasswordText: {
+  forgotButtonText: {
     color: appColors.textSecondary,
     fontSize: 14,
     fontWeight: '800',
-    fontFamily: appFonts.main,
     textDecorationLine: 'underline',
+    fontFamily: appFonts.main,
   },
-  secondaryButton: {
-    marginTop: 18,
+  switchButton: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 18,
+    paddingVertical: 14,
     alignItems: 'center',
   },
-  secondaryButtonText: {
+  switchButtonText: {
     color: appColors.text,
     fontSize: 15,
     fontWeight: '900',
+    textAlign: 'center',
+    fontFamily: appFonts.main,
+  },
+  errorMessage: {
+    color: '#FCA5A5',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '800',
+    fontFamily: appFonts.main,
+  },
+  successMessage: {
+    color: '#86EFAC',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '800',
     fontFamily: appFonts.main,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.82)',
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 22,
+    padding: 20,
   },
   modalCard: {
     width: '100%',
-    maxWidth: 430,
+    maxWidth: 460,
     backgroundColor: appColors.surface,
     borderRadius: 28,
     borderWidth: 1,
     borderColor: appColors.border,
     padding: 20,
+    gap: 18,
   },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    justifyContent: 'space-between',
     gap: 14,
-    marginBottom: 18,
   },
   modalTitleBlock: {
     flex: 1,
   },
   modalTitle: {
     color: appColors.text,
-    fontSize: 24,
+    fontSize: 25,
     fontWeight: '900',
-    marginBottom: 6,
     fontFamily: appFonts.main,
   },
   modalSubtitle: {
     color: appColors.textSecondary,
-    fontSize: 15,
+    fontSize: 14,
     lineHeight: 21,
+    marginTop: 5,
     fontFamily: appFonts.main,
   },
   modalCloseButton: {
@@ -552,18 +514,7 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
   modalCloseButtonText: {
     color: appColors.text,
     fontSize: 24,
-    fontWeight: '700',
-    lineHeight: 25,
-    fontFamily: appFonts.main,
-  },
-  modalSecondaryButton: {
-    marginTop: 14,
-    alignItems: 'center',
-  },
-  modalSecondaryButtonText: {
-    color: appColors.textSecondary,
-    fontSize: 15,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
+    fontWeight: '800',
+    lineHeight: 26,
   },
 });

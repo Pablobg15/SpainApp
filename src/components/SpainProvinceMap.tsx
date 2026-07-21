@@ -1,5 +1,5 @@
 import { geoMercator, geoPath } from 'd3-geo';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, {
   Circle,
   G,
@@ -230,42 +230,51 @@ function getStatusLabel(status?: ProvinceStatus) {
   }
 
   function renderProvince(feature: GeoFeature, index: number, isCanary = false) {
-    const provinceId = getProvinceIdFromFeature(feature);
-    const provinceStatus = safeProvinceStatuses[provinceId];
-    const isSelected = selectedProvince === provinceId;
+  const provinceId = getProvinceIdFromFeature(feature);
+  const provinceStatus = safeProvinceStatuses[provinceId];
+  const isSelected = selectedProvince === provinceId;
 
-    const path = isCanary
-      ? canaryPathGenerator(feature as any)
-      : mainPathGenerator(feature as any);
+  const path = isCanary
+    ? canaryPathGenerator(feature as any)
+    : mainPathGenerator(feature as any);
 
-    if (!path) {
-      return null;
-    }
+  if (!path) {
+    return null;
+  }
 
-    return (
-      <G
-        key={`${provinceId}-${index}`}
-        onPress={() => onSelectProvince(provinceId)}
-      >
-        {isSelected ? (
-          <Path
-            d={path}
-            fill="transparent"
-            stroke={atlasColors.selected}
-            strokeWidth={6}
-            opacity={0.45}
-          />
-        ) : null}
+  const pressHandlers =
+    Platform.OS === 'web'
+      ? ({
+          onClick: (event: any) => {
+            event?.stopPropagation?.();
+            onSelectProvince(provinceId);
+          },
+        } as any)
+      : {
+          onPress: () => onSelectProvince(provinceId),
+        };
 
+  return (
+    <G key={`${provinceId}-${index}`} {...pressHandlers}>
+      {isSelected ? (
         <Path
           d={path}
-          fill={getProvinceFill(provinceStatus)}
-          stroke={isSelected ? atlasColors.selected : atlasColors.border}
-          strokeWidth={isSelected ? 2.2 : 0.9}
+          fill="transparent"
+          stroke={atlasColors.selected}
+          strokeWidth={6}
+          opacity={0.45}
         />
-      </G>
-    );
-  }
+      ) : null}
+
+      <Path
+        d={path}
+        fill={getProvinceFill(provinceStatus)}
+        stroke={isSelected ? atlasColors.selected : atlasColors.border}
+        strokeWidth={isSelected ? 2.2 : 0.9}
+      />
+    </G>
+  );
+}
 
   return (
     <View style={styles.wrapper}>

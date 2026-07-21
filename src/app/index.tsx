@@ -1,3 +1,4 @@
+import LegalFooter from '@/components/LegalFooter';
 import type { Session } from '@supabase/supabase-js';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useState } from 'react';
@@ -777,8 +778,10 @@ export default function HomeScreen() {
             </>
           )}
         </View>
+        
       </ScrollView>
 
+  
       <View style={styles.bottomBarWrapper}>
         <View style={styles.tabBar}>
           <Pressable
@@ -913,6 +916,7 @@ export default function HomeScreen() {
             </Text>
           </Pressable>
         </View>
+        <LegalFooter variant="bottomBar" />
       </View>
 
       <Modal
