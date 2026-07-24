@@ -1,5 +1,12 @@
 import { geoMercator, geoPath } from 'd3-geo';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import Svg, {
   Circle,
   G,
@@ -163,6 +170,10 @@ function getStatusLabel(status?: ProvinceStatus) {
   onClearProvinceStatus,
   selectedProvince,
 }: SpainProvinceMapProps) {
+  const { width: screenWidth } = useWindowDimensions();
+
+  const isMobile = screenWidth < 520;
+
   const geoJson = mapData as any;
   const features: GeoFeature[] = geoJson.features ?? [];
 
@@ -178,8 +189,8 @@ function getStatusLabel(status?: ProvinceStatus) {
     (feature) => !canaryIds.includes(getProvinceIdFromFeature(feature))
   );
 
-  const width = 390;
-  const height = 510;
+  const width = Math.min(screenWidth - 72, 390);
+  const height = isMobile ? 470 : 510;
 
   const visitedCount = Object.values(safeProvinceStatuses).filter(
     (status) => status === 'visited' || status === 'home'
@@ -189,16 +200,16 @@ function getStatusLabel(status?: ProvinceStatus) {
 
   const mainProjection = geoMercator().fitExtent(
     [
-      [12, 64],
-      [378, 395],
+      [12, isMobile ? 68 : 64],
+      [width - 12, isMobile ? 354 : 395],
     ],
     createFeatureCollection(mainFeatures) as any
   );
 
   const canaryProjection = geoMercator().fitExtent(
     [
-      [42, 434],
-      [176, 494],
+      [28, isMobile ? 390 : 424],
+      [150, isMobile ? 452 : 494],
     ],
     createFeatureCollection(canaryFeatures) as any
   );
@@ -229,7 +240,7 @@ function getStatusLabel(status?: ProvinceStatus) {
     onSelectProvince(null);
   }
 
-  function renderProvince(feature: GeoFeature, index: number, isCanary = false) {
+function renderProvince(feature: GeoFeature, index: number, isCanary = false) {
   const provinceId = getProvinceIdFromFeature(feature);
   const provinceStatus = safeProvinceStatuses[provinceId];
   const isSelected = selectedProvince === provinceId;
@@ -242,27 +253,38 @@ function getStatusLabel(status?: ProvinceStatus) {
     return null;
   }
 
-  const pressHandlers =
+  function handleProvincePress(event?: any) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    onSelectProvince(provinceId);
+  }
+
+  const pathHandlers =
     Platform.OS === 'web'
       ? ({
-          onClick: (event: any) => {
-            event?.stopPropagation?.();
-            onSelectProvince(provinceId);
+          onClick: handleProvincePress,
+          onPointerDown: handleProvincePress,
+          onTouchStart: handleProvincePress,
+          style: {
+            cursor: 'pointer',
           },
         } as any)
       : {
-          onPress: () => onSelectProvince(provinceId),
+          onPress: handleProvincePress,
         };
 
   return (
-    <G key={`${provinceId}-${index}`} {...pressHandlers}>
+    <G key={`${provinceId}-${index}`}>
       {isSelected ? (
         <Path
           d={path}
           fill="transparent"
           stroke={atlasColors.selected}
-          strokeWidth={6}
+          strokeWidth={7}
           opacity={0.45}
+          pointerEvents="auto"
+          {...pathHandlers}
         />
       ) : null}
 
@@ -270,7 +292,9 @@ function getStatusLabel(status?: ProvinceStatus) {
         d={path}
         fill={getProvinceFill(provinceStatus)}
         stroke={isSelected ? atlasColors.selected : atlasColors.border}
-        strokeWidth={isSelected ? 2.2 : 0.9}
+        strokeWidth={isSelected ? 2.4 : 1}
+        pointerEvents="auto"
+        {...pathHandlers}
       />
     </G>
   );
@@ -282,8 +306,17 @@ function getStatusLabel(status?: ProvinceStatus) {
         <View style={styles.atlasHeader}>
           <View style={styles.atlasTitleBlock}>
             <Text style={styles.atlasEyebrow}>Atlas personal</Text>
-            <Text style={styles.atlasTitle}>ESPAÑA</Text>
-            <Text style={styles.atlasSubtitle}>
+
+            <Text style={[styles.atlasTitle, isMobile && styles.atlasTitleMobile]}>
+              ESPAÑA
+            </Text>
+
+            <Text
+              style={[
+                styles.atlasSubtitle,
+                isMobile && styles.atlasSubtitleMobile,
+              ]}
+            >
               Provincias visitadas y pendientes
             </Text>
           </View>
@@ -298,7 +331,12 @@ function getStatusLabel(status?: ProvinceStatus) {
 
         <View style={styles.atlasProgressBar}>
           <View
-            style={[styles.atlasProgressFill, { width: `${progress}%` }]}
+            style={[
+              styles.atlasProgressFill,
+              {
+                width: `${progress}%`,
+              },
+            ]}
           />
         </View>
 
@@ -325,8 +363,13 @@ function getStatusLabel(status?: ProvinceStatus) {
           </Text>
         </View>
 
-        <View style={styles.mapCanvas}>
-          <Svg viewBox={`0 0 ${width} ${height}`} width={width} height={height}>
+        <View style={[styles.mapCanvas, isMobile && styles.mapCanvasMobile]}>
+          <Svg
+  viewBox={`0 0 ${width} ${height}`}
+  width={width}
+  height={height}
+  pointerEvents="auto"
+>
             <Rect
               x={0}
               y={0}
@@ -336,33 +379,33 @@ function getStatusLabel(status?: ProvinceStatus) {
             />
 
             <Circle
-              cx={64}
-              cy={180}
-              r={135}
+              cx={isMobile ? 50 : 64}
+              cy={isMobile ? 162 : 180}
+              r={isMobile ? 118 : 135}
               fill={atlasColors.seaLight}
               opacity={0.55}
             />
 
             <Circle
-              cx={328}
-              cy={250}
-              r={105}
+              cx={width - 62}
+              cy={isMobile ? 238 : 250}
+              r={isMobile ? 92 : 105}
               fill={atlasColors.seaDark}
               opacity={0.4}
             />
 
             <Circle
-              cx={205}
-              cy={515}
-              r={150}
+              cx={width / 2}
+              cy={height + 10}
+              r={isMobile ? 126 : 150}
               fill={atlasColors.seaLight}
               opacity={0.45}
             />
 
             <SvgText
-              x={24}
-              y={38}
-              fontSize={20}
+              x={isMobile ? 16 : 24}
+              y={isMobile ? 33 : 38}
+              fontSize={isMobile ? 18 : 20}
               fontWeight="700"
               fill={atlasColors.ink}
               fontFamily={appFonts.main}
@@ -371,8 +414,8 @@ function getStatusLabel(status?: ProvinceStatus) {
             </SvgText>
 
             <SvgText
-              x={25}
-              y={57}
+              x={isMobile ? 17 : 25}
+              y={isMobile ? 51 : 57}
               fontSize={9}
               fontWeight="700"
               fill={atlasColors.inkSoft}
@@ -382,10 +425,10 @@ function getStatusLabel(status?: ProvinceStatus) {
             </SvgText>
 
             <Rect
-              x={24}
-              y={424}
-              width={162}
-              height={74}
+              x={18}
+              y={isMobile ? 382 : 424}
+              width={150}
+              height={70}
               rx={10}
               fill={atlasColors.pending}
               opacity={0.78}
@@ -394,8 +437,8 @@ function getStatusLabel(status?: ProvinceStatus) {
             />
 
             <SvgText
-              x={39}
-              y={444}
+              x={32}
+              y={isMobile ? 402 : 444}
               fontSize={10}
               fontWeight="700"
               fill={atlasColors.inkSoft}
@@ -524,12 +567,20 @@ function getStatusLabel(status?: ProvinceStatus) {
     lineHeight: 38,
     fontFamily: appFonts.main,
   },
+  atlasTitleMobile: {
+    fontSize: 28,
+    lineHeight: 32,
+  },
   atlasSubtitle: {
     color: atlasColors.inkSoft,
     fontSize: 14,
     fontWeight: '700',
     marginTop: 4,
     fontFamily: appFonts.main,
+  },
+  atlasSubtitleMobile: {
+    fontSize: 12,
+    lineHeight: 17,
   },
   atlasProgressBox: {
     backgroundColor: 'rgba(255, 248, 230, 0.78)',
@@ -620,16 +671,21 @@ function getStatusLabel(status?: ProvinceStatus) {
     lineHeight: 17,
     fontFamily: appFonts.main,
   },
-  mapCanvas: {
-    position: 'relative',
-    height: 560,
-    backgroundColor: atlasColors.sea,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: atlasColors.border,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
+ mapCanvas: {
+  position: 'relative',
+  height: 560,
+  backgroundColor: atlasColors.sea,
+  borderRadius: 22,
+  borderWidth: 1,
+  borderColor: atlasColors.border,
+  overflow: 'hidden',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1,
+  elevation: 1,
+},
+  mapCanvasMobile: {
+    height: 500,
   },
   popupCard: {
     position: 'absolute',

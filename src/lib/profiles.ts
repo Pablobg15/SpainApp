@@ -47,3 +47,16 @@ export async function updateProfileAvatar(userId: string, avatarUrl: string) {
     throw error;
   }
 }
+
+export async function updateProfileName(userId: string, name: string) {
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      name,
+    })
+    .eq('id', userId);
+
+  if (error) {
+    throw error;
+  }
+}

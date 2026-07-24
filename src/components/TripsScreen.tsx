@@ -1,13 +1,13 @@
 import * as ImagePicker from 'expo-image-picker';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -23,17 +23,21 @@ export type Trip = {
   provinceId: string;
   notes: string;
   imageUri?: string;
+  isPublic?: boolean;
 };
 
 type TripsScreenProps = {
   trips: Trip[];
-  onAddTrip: (trip: Trip) => void;
-  onUpdateTrip: (trip: Trip) => void;
-  onDeleteTrip: (tripId: string) => void;
-  onTripProvinceSaved: (provinceId: string) => void;
+  onAddTrip?: (trip: Trip) => Promise<void> | void;
+  onCreateTrip?: (trip: Trip) => Promise<void> | void;
+  onUpdateTrip: (trip: Trip) => Promise<void> | void;
+  onDeleteTrip: (tripId: string) => Promise<void> | void;
+  onSelectTrip?: (trip: Trip) => void;
 };
 
 type DateField = 'start' | 'end';
+
+const weekDays = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 
 const monthNames = [
   'Enero',
@@ -50,84 +54,80 @@ const monthNames = [
   'Diciembre',
 ];
 
-const weekDays = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+function getTodayIsoDate() {
+  const today = new Date();
 
-function createId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return today.toISOString().split('T')[0];
 }
 
-function fromIsoDate(isoDate: string) {
-  const [year, month, day] = isoDate.split('-').map(Number);
-
-  return new Date(year, month - 1, day);
-}
-
-function formatDate(isoDate: string) {
-  if (!isoDate) {
-    return '';
+function formatDate(date: string) {
+  if (!date) {
+    return 'Seleccionar fecha';
   }
 
-  const date = fromIsoDate(isoDate);
-  const day = `${date.getDate()}`.padStart(2, '0');
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const year = date.getFullYear();
+  const [year, month, day] = date.split('-');
+
+  if (!year || !month || !day) {
+    return date;
+  }
 
   return `${day}/${month}/${year}`;
 }
 
-function formatLongDate(isoDate: string) {
-  if (!isoDate) {
-    return 'Seleccionar fecha';
+function formatDateRange(startDate: string, endDate: string) {
+  if (startDate === endDate) {
+    return formatDate(startDate);
   }
 
-  const date = fromIsoDate(isoDate);
-  const day = date.getDate();
-  const month = monthNames[date.getMonth()].toLowerCase();
-  const year = date.getFullYear();
-
-  return `${day} ${month} ${year}`;
-}
-
-function getTodayIsoDate() {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
+  return `${formatDate(startDate)} - ${formatDate(endDate)}`;
 }
 
 function getProvinceName(provinceId: string) {
-  return provinces.find((province) => province.id === provinceId)?.name ?? '';
+  return (
+    provinces.find((province) => province.id === provinceId)?.name ??
+    provinceId
+  );
 }
 
-function getIsoDate(year: number, month: number, day: number) {
-  const monthText = `${month + 1}`.padStart(2, '0');
-  const dayText = `${day}`.padStart(2, '0');
+function getIsoDateFromParts(year: number, month: number, day: number) {
+  const monthText = String(month + 1).padStart(2, '0');
+  const dayText = String(day).padStart(2, '0');
 
   return `${year}-${monthText}-${dayText}`;
 }
 
-function getDaysInMonth(year: number, month: number) {
-  return new Date(year, month + 1, 0).getDate();
-}
+function getCalendarDays(year: number, month: number) {
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
 
-function getFirstWeekdayOffset(year: number, month: number) {
-  const jsDay = new Date(year, month, 1).getDay();
+  const firstWeekDay = (firstDay.getDay() + 6) % 7;
+  const daysInMonth = lastDay.getDate();
 
-  return jsDay === 0 ? 6 : jsDay - 1;
+  const emptyDays = Array.from({ length: firstWeekDay }, (_, index) => ({
+    id: `empty-${index}`,
+    day: null as number | null,
+  }));
+
+  const monthDays = Array.from({ length: daysInMonth }, (_, index) => ({
+    id: `day-${index + 1}`,
+    day: index + 1,
+  }));
+
+  return [...emptyDays, ...monthDays];
 }
 
 export default function TripsScreen({
   trips,
   onAddTrip,
+  onCreateTrip,
   onUpdateTrip,
   onDeleteTrip,
-  onTripProvinceSaved,
+  onSelectTrip,
 }: TripsScreenProps) {
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [editingTrip, setEditingTrip] = useState<Trip | null>(null);
   const [tripToDelete, setTripToDelete] = useState<Trip | null>(null);
+
   const [isProvincePickerVisible, setIsProvincePickerVisible] = useState(false);
 
   const [name, setName] = useState('');
@@ -135,15 +135,27 @@ export default function TripsScreen({
   const [startDate, setStartDate] = useState(getTodayIsoDate());
   const [endDate, setEndDate] = useState(getTodayIsoDate());
   const [notes, setNotes] = useState('');
-  const [imageUri, setImageUri] = useState<string | undefined>(undefined);
+  const [imageUri, setImageUri] = useState<string | undefined>();
+  const [isPublic, setIsPublic] = useState(true);
 
-  const [selectedDateField, setSelectedDateField] =
-    useState<DateField | null>(null);
+  const [selectedDateField, setSelectedDateField] = useState<DateField | null>(
+    null
+  );
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
 
   const [isImageLoading, setIsImageLoading] = useState(false);
+  const [isSavingTrip, setIsSavingTrip] = useState(false);
+  const [isDeletingTrip, setIsDeletingTrip] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+
+  const sortedTrips = useMemo(() => {
+    return [...trips].sort((a, b) => {
+      return b.startDate.localeCompare(a.startDate);
+    });
+  }, [trips]);
+
+  const selectedProvinceName = getProvinceName(provinceId);
 
   function resetForm() {
     setEditingTrip(null);
@@ -153,9 +165,9 @@ export default function TripsScreen({
     setEndDate(getTodayIsoDate());
     setNotes('');
     setImageUri(undefined);
+    setIsPublic(true);
     setErrorMessage('');
     setSelectedDateField(null);
-    setIsProvincePickerVisible(false);
   }
 
   function openNewTripForm() {
@@ -171,56 +183,80 @@ export default function TripsScreen({
     setEndDate(trip.endDate);
     setNotes(trip.notes);
     setImageUri(trip.imageUri);
+    setIsPublic(trip.isPublic ?? true);
     setErrorMessage('');
-    setSelectedDateField(null);
-    setIsProvincePickerVisible(false);
     setIsFormVisible(true);
   }
 
   function closeForm() {
+    if (isSavingTrip) {
+      return;
+    }
+
     setIsFormVisible(false);
     resetForm();
   }
 
   function openDatePicker(field: DateField) {
-    const currentDate = fromIsoDate(field === 'start' ? startDate : endDate);
+    const currentDate = field === 'start' ? startDate : endDate;
+    const [year, month] = currentDate.split('-').map(Number);
+
+    if (year && month) {
+      setCalendarYear(year);
+      setCalendarMonth(month - 1);
+    }
 
     setSelectedDateField(field);
-    setCalendarYear(currentDate.getFullYear());
-    setCalendarMonth(currentDate.getMonth());
   }
 
   function closeDatePicker() {
     setSelectedDateField(null);
   }
 
-  function changeMonth(amount: number) {
-    const nextDate = new Date(calendarYear, calendarMonth + amount, 1);
+  function changeMonth(direction: 'previous' | 'next') {
+    setCalendarMonth((currentMonth) => {
+      if (direction === 'previous') {
+        if (currentMonth === 0) {
+          setCalendarYear((currentYear) => currentYear - 1);
+          return 11;
+        }
 
-    setCalendarYear(nextDate.getFullYear());
-    setCalendarMonth(nextDate.getMonth());
+        return currentMonth - 1;
+      }
+
+      if (currentMonth === 11) {
+        setCalendarYear((currentYear) => currentYear + 1);
+        return 0;
+      }
+
+      return currentMonth + 1;
+    });
   }
 
-  function changeYear(amount: number) {
-    setCalendarYear((currentYear) => currentYear + amount);
+  function changeYear(direction: 'previous' | 'next') {
+    setCalendarYear((currentYear) =>
+      direction === 'previous' ? currentYear - 1 : currentYear + 1
+    );
   }
 
   function selectCalendarDay(day: number) {
-    const selectedIsoDate = getIsoDate(calendarYear, calendarMonth, day);
-
-    if (selectedDateField === 'start') {
-      setStartDate(selectedIsoDate);
-
-      if (fromIsoDate(selectedIsoDate) > fromIsoDate(endDate)) {
-        setEndDate(selectedIsoDate);
-      }
+    if (!selectedDateField) {
+      return;
     }
 
-    if (selectedDateField === 'end') {
-      setEndDate(selectedIsoDate);
+    const selectedDate = getIsoDateFromParts(calendarYear, calendarMonth, day);
 
-      if (fromIsoDate(selectedIsoDate) < fromIsoDate(startDate)) {
-        setStartDate(selectedIsoDate);
+    if (selectedDateField === 'start') {
+      setStartDate(selectedDate);
+
+      if (selectedDate > endDate) {
+        setEndDate(selectedDate);
+      }
+    } else {
+      setEndDate(selectedDate);
+
+      if (selectedDate < startDate) {
+        setStartDate(selectedDate);
       }
     }
 
@@ -235,7 +271,7 @@ export default function TripsScreen({
         await ImagePicker.requestMediaLibraryPermissionsAsync();
 
       if (!permissionResult.granted) {
-        setErrorMessage('Necesitamos acceso a tus fotos para añadir una imagen.');
+        setErrorMessage('Necesitamos permiso para acceder a tus fotos.');
         return;
       }
 
@@ -245,27 +281,29 @@ export default function TripsScreen({
         quality: 0.85,
       });
 
-      if (result.canceled || !result.assets[0]?.uri) {
-        return;
+      if (!result.canceled && result.assets[0]?.uri) {
+        setImageUri(result.assets[0].uri);
       }
-
-      setImageUri(result.assets[0].uri);
     } catch (error) {
-      console.log('Error picking image:', error);
-      setErrorMessage('No se pudo seleccionar la imagen.');
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo seleccionar la imagen.';
+
+      setErrorMessage(message);
     } finally {
       setIsImageLoading(false);
     }
   }
 
-  function saveTrip() {
+  async function saveTrip() {
     const cleanName = name.trim();
     const cleanNotes = notes.trim();
 
     setErrorMessage('');
 
-    if (!cleanName) {
-      setErrorMessage('Escribe un nombre para el viaje.');
+    if (cleanName.length < 2) {
+      setErrorMessage('Introduce un nombre para el viaje.');
       return;
     }
 
@@ -275,117 +313,198 @@ export default function TripsScreen({
     }
 
     if (!startDate || !endDate) {
-      setErrorMessage('Añade fecha de inicio y fecha de fin.');
+      setErrorMessage('Selecciona la fecha de inicio y fin.');
+      return;
+    }
+
+    if (endDate < startDate) {
+      setErrorMessage('La fecha de fin no puede ser anterior a la de inicio.');
       return;
     }
 
     const tripToSave: Trip = {
-      id: editingTrip?.id ?? createId(),
+      id: editingTrip?.id ?? `${Date.now()}`,
       name: cleanName,
-      provinceId,
       startDate,
       endDate,
+      provinceId,
       notes: cleanNotes,
       imageUri,
+      isPublic,
     };
 
-    if (editingTrip) {
-      onUpdateTrip(tripToSave);
-    } else {
-      onAddTrip(tripToSave);
+    try {
+      setIsSavingTrip(true);
+
+      if (editingTrip) {
+        await onUpdateTrip(tripToSave);
+      } else if (onAddTrip) {
+        await onAddTrip(tripToSave);
+      } else if (onCreateTrip) {
+        await onCreateTrip(tripToSave);
+      }
+
+      setIsFormVisible(false);
+      resetForm();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'No se pudo guardar el viaje.';
+
+      setErrorMessage(message);
+    } finally {
+      setIsSavingTrip(false);
     }
-
-    onTripProvinceSaved(provinceId);
-    closeForm();
-  }
-
+  }  
+  
   function askDeleteTrip(trip: Trip) {
     setTripToDelete(trip);
   }
 
   function cancelDeleteTrip() {
+    if (isDeletingTrip) {
+      return;
+    }
+
     setTripToDelete(null);
   }
 
-  function confirmDeleteTrip() {
+  async function confirmDeleteTrip() {
     if (!tripToDelete) {
       return;
     }
 
-    onDeleteTrip(tripToDelete.id);
-    setTripToDelete(null);
+    try {
+      setIsDeletingTrip(true);
+
+      await onDeleteTrip(tripToDelete.id);
+
+      setTripToDelete(null);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo eliminar el viaje.';
+
+      setErrorMessage(message);
+    } finally {
+      setIsDeletingTrip(false);
+    }
   }
 
-  const daysInSelectedMonth = getDaysInMonth(calendarYear, calendarMonth);
-  const firstWeekdayOffset = getFirstWeekdayOffset(calendarYear, calendarMonth);
-  const calendarDays = Array.from(
-    { length: daysInSelectedMonth },
-    (_, index) => index + 1
-  );  return (
-    <View style={styles.screen}>
-      <Pressable style={styles.addButton} onPress={openNewTripForm}>
-        <Text style={styles.addButtonText}>＋ Añadir viaje</Text>
-      </Pressable>
+  const calendarDays = getCalendarDays(calendarYear, calendarMonth);
 
-      {trips.length === 0 ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyIcon}>✈️</Text>
-          <Text style={styles.emptyTitle}>Aún no tienes viajes</Text>
-          <Text style={styles.emptyText}>
-            Guarda tus escapadas por España con fechas, provincia, notas y foto.
+  return (
+    <View style={styles.container}>
+      <View style={styles.headerCard}>
+        <View style={styles.headerTextBlock}>
+          <Text style={styles.eyebrow}>Diario de viaje</Text>
+
+          <Text style={styles.title}>Mis viajes</Text>
+
+          <Text style={styles.subtitle}>
+            Guarda tus escapadas, fotos y notas de cada provincia.
           </Text>
         </View>
-      ) : (
+
+        <Pressable style={styles.addButton} onPress={openNewTripForm}>
+          <Text style={styles.addButtonText}>+ Añadir</Text>
+        </Pressable>
+      </View>
+
+      {sortedTrips.length > 0 ? (
         <View style={styles.tripsList}>
-          {trips.map((trip) => (
-            <View key={trip.id} style={styles.tripCard}>
+          {sortedTrips.map((trip) => (
+            <Pressable
+              key={trip.id}
+              style={styles.tripCard}
+              onPress={() => onSelectTrip?.(trip)}
+            >
               {trip.imageUri ? (
-                <Image
-                  source={{ uri: trip.imageUri }}
-                  style={styles.tripImage}
-                  resizeMode="cover"
-                />
+                <Image source={{ uri: trip.imageUri }} style={styles.tripImage} />
               ) : (
                 <View style={styles.tripImagePlaceholder}>
                   <Text style={styles.tripImagePlaceholderText}>✈️</Text>
                 </View>
               )}
 
-              <View style={styles.tripContent}>
-                <Text style={styles.tripName}>{trip.name}</Text>
+              <View style={styles.tripInfo}>
+                <View style={styles.tripTopRow}>
+                  <View style={styles.tripTitleBlock}>
+                    <Text style={styles.tripName}>{trip.name}</Text>
 
-                <Text style={styles.tripProvince}>
-                  {getProvinceName(trip.provinceId)}
-                </Text>
+                    <Text style={styles.tripProvince}>
+                      {getProvinceName(trip.provinceId)}
+                    </Text>
+                  </View>
 
-                <Text style={styles.tripDates}>
-                  {formatDate(trip.startDate)} - {formatDate(trip.endDate)}
+                  <View
+                    style={[
+                      styles.visibilityBadge,
+                      !(trip.isPublic ?? true) && styles.visibilityBadgePrivate,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.visibilityBadgeText,
+                        !(trip.isPublic ?? true) &&
+                          styles.visibilityBadgeTextPrivate,
+                      ]}
+                    >
+                      {trip.isPublic ?? true ? 'Amigos' : 'Privado'}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.tripDate}>
+                  {formatDateRange(trip.startDate, trip.endDate)}
                 </Text>
 
                 {trip.notes ? (
-                  <Text style={styles.tripNotes} numberOfLines={3}>
+                  <Text style={styles.tripNotes} numberOfLines={2}>
                     {trip.notes}
                   </Text>
                 ) : null}
 
                 <View style={styles.tripActions}>
                   <Pressable
-                    style={styles.editButton}
+                    style={styles.tripActionButton}
                     onPress={() => openEditTripForm(trip)}
                   >
-                    <Text style={styles.editButtonText}>Editar</Text>
+                    <Text style={styles.tripActionButtonText}>Editar</Text>
                   </Pressable>
 
                   <Pressable
-                    style={styles.deleteButton}
+                    style={[styles.tripActionButton, styles.tripDeleteButton]}
                     onPress={() => askDeleteTrip(trip)}
                   >
-                    <Text style={styles.deleteButtonText}>Eliminar</Text>
+                    <Text
+                      style={[
+                        styles.tripActionButtonText,
+                        styles.tripDeleteButtonText,
+                      ]}
+                    >
+                      Eliminar
+                    </Text>
                   </Pressable>
                 </View>
               </View>
-            </View>
+            </Pressable>
           ))}
+        </View>
+      ) : (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyIcon}>🧳</Text>
+
+          <Text style={styles.emptyTitle}>Todavía no tienes viajes</Text>
+
+          <Text style={styles.emptyText}>
+            Añade tu primer viaje para guardar fechas, provincia, notas y una
+            foto.
+          </Text>
+
+          <Pressable style={styles.emptyButton} onPress={openNewTripForm}>
+            <Text style={styles.emptyButtonText}>Crear mi primer viaje</Text>
+          </Pressable>
         </View>
       )}
 
@@ -397,25 +516,28 @@ export default function TripsScreen({
       >
         <View style={styles.modalOverlay}>
           <View style={styles.formCard}>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.formHeader}>
-                <View style={styles.formHeaderTextBlock}>
-                  <Text style={styles.formTitle}>
-                    {editingTrip ? 'Editar viaje' : 'Nuevo viaje'}
-                  </Text>
+            <View style={styles.formHeader}>
+              <View style={styles.formHeaderTextBlock}>
+                <Text style={styles.formTitle}>
+                  {editingTrip ? 'Editar viaje' : 'Nuevo viaje'}
+                </Text>
 
-                  <Text style={styles.formSubtitle}>
-                    Guarda los detalles de tu escapada.
-                  </Text>
-                </View>
-
-                <Pressable style={styles.closeButton} onPress={closeForm}>
-                  <Text style={styles.closeButtonText}>×</Text>
-                </Pressable>
+                <Text style={styles.formSubtitle}>
+                  Completa los datos de tu escapada.
+                </Text>
               </View>
 
-              <View style={styles.inputBlock}>
-                <Text style={styles.inputLabel}>Nombre del viaje</Text>
+              <Pressable style={styles.closeButton} onPress={closeForm}>
+                <Text style={styles.closeButtonText}>×</Text>
+              </Pressable>
+            </View>
+
+            <ScrollView
+              contentContainerStyle={styles.formContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Nombre del viaje</Text>
 
                 <TextInput
                   style={styles.input}
@@ -426,93 +548,126 @@ export default function TripsScreen({
                 />
               </View>
 
-              <View style={styles.inputBlock}>
-                <Text style={styles.inputLabel}>Provincia</Text>
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Provincia</Text>
 
                 <Pressable
-                  style={styles.provinceSelectButton}
+                  style={styles.selectorButton}
                   onPress={() => setIsProvincePickerVisible(true)}
                 >
-                  <Text style={styles.provinceSelectText}>
-                    {getProvinceName(provinceId) || 'Seleccionar provincia'}
+                  <Text style={styles.selectorButtonText}>
+                    {selectedProvinceName}
                   </Text>
 
-                  <Text style={styles.provinceSelectAction}>Cambiar</Text>
+                  <Text style={styles.selectorButtonIcon}>⌄</Text>
                 </Pressable>
               </View>
 
-              <View style={styles.datesRow}>
-                <View style={[styles.inputBlock, styles.dateInputBlock]}>
-                  <Text style={styles.inputLabel}>Inicio</Text>
+              <View style={styles.dateRow}>
+                <View style={styles.dateColumn}>
+                  <Text style={styles.label}>Inicio</Text>
 
                   <Pressable
                     style={styles.dateButton}
                     onPress={() => openDatePicker('start')}
                   >
                     <Text style={styles.dateButtonText}>
-                      {formatLongDate(startDate)}
+                      {formatDate(startDate)}
                     </Text>
-                    <Text style={styles.dateButtonIcon}>📅</Text>
                   </Pressable>
                 </View>
 
-                <View style={[styles.inputBlock, styles.dateInputBlock]}>
-                  <Text style={styles.inputLabel}>Fin</Text>
+                <View style={styles.dateColumn}>
+                  <Text style={styles.label}>Fin</Text>
 
                   <Pressable
                     style={styles.dateButton}
                     onPress={() => openDatePicker('end')}
                   >
-                    <Text style={styles.dateButtonText}>
-                      {formatLongDate(endDate)}
-                    </Text>
-                    <Text style={styles.dateButtonIcon}>📅</Text>
+                    <Text style={styles.dateButtonText}>{formatDate(endDate)}</Text>
                   </Pressable>
                 </View>
               </View>
 
-              <View style={styles.inputBlock}>
-                <Text style={styles.inputLabel}>Notas</Text>
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Notas</Text>
 
                 <TextInput
                   style={[styles.input, styles.notesInput]}
                   value={notes}
                   onChangeText={setNotes}
-                  placeholder="Qué hiciste, lugares que viste, recuerdos..."
+                  placeholder="Qué hiciste, sitios que visitaste, recuerdos..."
                   placeholderTextColor={appColors.textMuted}
                   multiline
                   textAlignVertical="top"
                 />
               </View>
 
-              <Pressable style={styles.imageButton} onPress={pickImage}>
-                {isImageLoading ? (
-                  <ActivityIndicator color={appColors.black} />
-                ) : (
-                  <Text style={styles.imageButtonText}>
-                    {imageUri ? 'Cambiar foto' : 'Añadir foto'}
-                  </Text>
-                )}
-              </Pressable>
+              <View style={styles.visibilityCard}>
+                <View style={styles.visibilityTextBlock}>
+                  <Text style={styles.visibilityTitle}>Visible para amigos</Text>
 
-              {imageUri ? (
-                <Image
-                  source={{ uri: imageUri }}
-                  style={styles.formImagePreview}
-                  resizeMode="cover"
+                  <Text style={styles.visibilityDescription}>
+                    {isPublic
+                      ? 'Tus amigos podrán ver este viaje en tu perfil.'
+                      : 'Solo tú podrás ver este viaje.'}
+                  </Text>
+                </View>
+
+                <Switch
+                  value={isPublic}
+                  onValueChange={setIsPublic}
+                  trackColor={{
+                    false: appColors.border,
+                    true: appColors.visited,
+                  }}
+                  thumbColor={appColors.white}
                 />
-              ) : null}
+              </View>
+
+              <View style={styles.imagePickerBlock}>
+                {imageUri ? (
+                  <Image source={{ uri: imageUri }} style={styles.formImage} />
+                ) : (
+                  <View style={styles.formImagePlaceholder}>
+                    <Text style={styles.formImagePlaceholderText}>📷</Text>
+                    <Text style={styles.formImagePlaceholderLabel}>
+                      Sin foto todavía
+                    </Text>
+                  </View>
+                )}
+
+                <Pressable
+                  style={[styles.secondaryButton, isImageLoading && styles.disabledButton]}
+                  onPress={pickImage}
+                  disabled={isImageLoading}
+                >
+                  {isImageLoading ? (
+                    <ActivityIndicator color={appColors.text} />
+                  ) : (
+                    <Text style={styles.secondaryButtonText}>
+                      {imageUri ? 'Cambiar foto' : 'Añadir foto'}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
 
               {errorMessage ? (
-                <View style={styles.errorBox}>
-                  <Text style={styles.errorText}>{errorMessage}</Text>
-                </View>
+                <Text style={styles.errorMessage}>{errorMessage}</Text>
               ) : null}
 
-              <Pressable style={styles.saveButton} onPress={saveTrip}>
-                <Text style={styles.saveButtonText}>
-                  {editingTrip ? 'Guardar cambios' : 'Guardar viaje'}
-                </Text>
+              <Pressable
+                style={[styles.saveButton, isSavingTrip && styles.disabledButton]}
+                onPress={saveTrip}
+                disabled={isSavingTrip}
+              >
+                {isSavingTrip ? (
+                  <ActivityIndicator color={appColors.black} />
+                ) : (
+                  <Text style={styles.saveButtonText}>
+                    {editingTrip ? 'Guardar cambios' : 'Crear viaje'}
+                  </Text>
+                )}
               </Pressable>
             </ScrollView>
           </View>
@@ -525,132 +680,128 @@ export default function TripsScreen({
         animationType="fade"
         onRequestClose={() => setIsProvincePickerVisible(false)}
       >
-        <View style={styles.provincePickerOverlay}>
-          <View style={styles.provincePickerCard}>
-            <View style={styles.provincePickerHeader}>
-              <View>
-                <Text style={styles.provincePickerTitle}>Elegir provincia</Text>
-                <Text style={styles.provincePickerSubtitle}>
-                  Selecciona la provincia del viaje
+        <View style={styles.modalOverlay}>
+          <View style={styles.pickerCard}>
+            <View style={styles.formHeader}>
+              <View style={styles.formHeaderTextBlock}>
+                <Text style={styles.formTitle}>Selecciona provincia</Text>
+
+                <Text style={styles.formSubtitle}>
+                  Elige dónde fue este viaje.
                 </Text>
               </View>
 
               <Pressable
-                style={styles.provincePickerCloseButton}
+                style={styles.closeButton}
                 onPress={() => setIsProvincePickerVisible(false)}
               >
-                <Text style={styles.provincePickerCloseButtonText}>×</Text>
+                <Text style={styles.closeButtonText}>×</Text>
               </Pressable>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.provincePickerList}>
-                {provinces.map((province) => {
-                  const isSelected = province.id === provinceId;
+            <ScrollView
+              contentContainerStyle={styles.provincePickerList}
+              showsVerticalScrollIndicator={false}
+            >
+              {provinces.map((province) => {
+                const isSelected = province.id === provinceId;
 
-                  return (
-                    <Pressable
-                      key={province.id}
+                return (
+                  <Pressable
+                    key={province.id}
+                    style={[
+                      styles.provincePickerItem,
+                      isSelected && styles.provincePickerItemActive,
+                    ]}
+                    onPress={() => {
+                      setProvinceId(province.id);
+                      setIsProvincePickerVisible(false);
+                    }}
+                  >
+                    <Text
                       style={[
-                        styles.provincePickerItem,
-                        isSelected && styles.provincePickerItemSelected,
+                        styles.provincePickerItemText,
+                        isSelected && styles.provincePickerItemTextActive,
                       ]}
-                      onPress={() => {
-                        setProvinceId(province.id);
-                        setIsProvincePickerVisible(false);
-                      }}
                     >
-                      <Text
-                        style={[
-                          styles.provincePickerItemText,
-                          isSelected &&
-                            styles.provincePickerItemTextSelected,
-                        ]}
-                      >
-                        {province.name}
-                      </Text>
+                      {province.name}
+                    </Text>
 
-                      {isSelected ? (
-                        <Text style={styles.provincePickerCheck}>✓</Text>
-                      ) : null}
-                    </Pressable>
-                  );
-                })}
-              </View>
+                    <Text style={styles.provincePickerCommunity}>
+                      {province.community}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </ScrollView>
           </View>
         </View>
-      </Modal>
-
+      </Modal>      
       <Modal
-        visible={!!selectedDateField}
+        visible={Boolean(selectedDateField)}
         transparent
         animationType="fade"
         onRequestClose={closeDatePicker}
       >
-        <View style={styles.calendarOverlay}>
+        <View style={styles.modalOverlay}>
           <View style={styles.calendarCard}>
-            <View style={styles.calendarHeader}>
-              <View>
-                <Text style={styles.calendarTitle}>
+            <View style={styles.formHeader}>
+              <View style={styles.formHeaderTextBlock}>
+                <Text style={styles.formTitle}>
                   {selectedDateField === 'start'
                     ? 'Fecha de inicio'
                     : 'Fecha de fin'}
                 </Text>
-                <Text style={styles.calendarSubtitle}>
-                  Selecciona día, mes y año
-                </Text>
+
+                <Text style={styles.formSubtitle}>Selecciona una fecha.</Text>
               </View>
 
-              <Pressable
-                style={styles.calendarCloseButton}
-                onPress={closeDatePicker}
-              >
-                <Text style={styles.calendarCloseButtonText}>×</Text>
+              <Pressable style={styles.closeButton} onPress={closeDatePicker}>
+                <Text style={styles.closeButtonText}>×</Text>
               </Pressable>
             </View>
 
             <View style={styles.calendarControls}>
-              <View style={styles.calendarControlRow}>
+              <View style={styles.calendarYearRow}>
                 <Pressable
                   style={styles.calendarControlButton}
-                  onPress={() => changeYear(-1)}
+                  onPress={() => changeYear('previous')}
                 >
                   <Text style={styles.calendarControlText}>Año -</Text>
                 </Pressable>
 
-                <Text style={styles.calendarYearText}>{calendarYear}</Text>
+                <Text style={styles.calendarCurrentYear}>{calendarYear}</Text>
 
                 <Pressable
                   style={styles.calendarControlButton}
-                  onPress={() => changeYear(1)}
+                  onPress={() => changeYear('next')}
                 >
                   <Text style={styles.calendarControlText}>Año +</Text>
                 </Pressable>
               </View>
 
-              <View style={styles.calendarControlRow}>
+              <View style={styles.calendarMonthRow}>
                 <Pressable
-                  style={styles.calendarControlButton}
-                  onPress={() => changeMonth(-1)}
+                  style={styles.calendarArrowButton}
+                  onPress={() => changeMonth('previous')}
                 >
-                  <Text style={styles.calendarControlText}>‹ Mes</Text>
+                  <Text style={styles.calendarArrowText}>‹</Text>
                 </Pressable>
 
-                <Text style={styles.calendarMonthText}>
+                <Text style={styles.calendarCurrentMonth}>
                   {monthNames[calendarMonth]}
                 </Text>
 
                 <Pressable
-                  style={styles.calendarControlButton}
-                  onPress={() => changeMonth(1)}
+                  style={styles.calendarArrowButton}
+                  onPress={() => changeMonth('next')}
                 >
-                  <Text style={styles.calendarControlText}>Mes ›</Text>
+                  <Text style={styles.calendarArrowText}>›</Text>
                 </Pressable>
               </View>
             </View>
 
-            <View style={styles.weekDaysGrid}>
+            <View style={styles.weekDaysRow}>
               {weekDays.map((day) => (
                 <Text key={day} style={styles.weekDayText}>
                   {day}
@@ -658,33 +809,38 @@ export default function TripsScreen({
               ))}
             </View>
 
-            <View style={styles.daysGrid}>
-              {Array.from({ length: firstWeekdayOffset }).map((_, index) => (
-                <View key={`empty-${index}`} style={styles.emptyDayCell} />
-              ))}
+            <View style={styles.calendarGrid}>
+              {calendarDays.map((item) => {
+                if (!item.day) {
+                  return <View key={item.id} style={styles.calendarDayEmpty} />;
+                }
 
-              {calendarDays.map((day) => {
-                const isoDate = getIsoDate(calendarYear, calendarMonth, day);
+                const isoDate = getIsoDateFromParts(
+                  calendarYear,
+                  calendarMonth,
+                  item.day
+                );
+
                 const isSelected =
                   isoDate ===
                   (selectedDateField === 'start' ? startDate : endDate);
 
                 return (
                   <Pressable
-                    key={day}
+                    key={item.id}
                     style={[
-                      styles.dayCell,
-                      isSelected && styles.dayCellSelected,
+                      styles.calendarDayButton,
+                      isSelected && styles.calendarDayButtonActive,
                     ]}
-                    onPress={() => selectCalendarDay(day)}
+                    onPress={() => selectCalendarDay(item.day as number)}
                   >
                     <Text
                       style={[
-                        styles.dayCellText,
-                        isSelected && styles.dayCellTextSelected,
+                        styles.calendarDayText,
+                        isSelected && styles.calendarDayTextActive,
                       ]}
                     >
-                      {day}
+                      {item.day}
                     </Text>
                   </Pressable>
                 );
@@ -695,33 +851,44 @@ export default function TripsScreen({
       </Modal>
 
       <Modal
-        visible={!!tripToDelete}
+        visible={Boolean(tripToDelete)}
         transparent
         animationType="fade"
         onRequestClose={cancelDeleteTrip}
       >
-        <View style={styles.deleteModalOverlay}>
-          <View style={styles.deleteModalCard}>
-            <Text style={styles.deleteModalTitle}>Eliminar viaje</Text>
+        <View style={styles.modalOverlay}>
+          <View style={styles.deleteCard}>
+            <Text style={styles.deleteIcon}>🗑️</Text>
 
-            <Text style={styles.deleteModalText}>
-              ¿Seguro que quieres borrar “{tripToDelete?.name}”? Esta acción no
-              se puede deshacer.
+            <Text style={styles.deleteTitle}>Eliminar viaje</Text>
+
+            <Text style={styles.deleteText}>
+              ¿Seguro que quieres eliminar “{tripToDelete?.name}”? Esta acción
+              no se puede deshacer.
             </Text>
 
-            <View style={styles.deleteModalActions}>
+            <View style={styles.deleteActions}>
               <Pressable
-                style={styles.cancelDeleteButton}
+                style={styles.deleteCancelButton}
                 onPress={cancelDeleteTrip}
+                disabled={isDeletingTrip}
               >
-                <Text style={styles.cancelDeleteButtonText}>Cancelar</Text>
+                <Text style={styles.deleteCancelButtonText}>Cancelar</Text>
               </Pressable>
 
               <Pressable
-                style={styles.confirmDeleteButton}
+                style={[
+                  styles.deleteConfirmButton,
+                  isDeletingTrip && styles.disabledButton,
+                ]}
                 onPress={confirmDeleteTrip}
+                disabled={isDeletingTrip}
               >
-                <Text style={styles.confirmDeleteButtonText}>Eliminar</Text>
+                {isDeletingTrip ? (
+                  <ActivityIndicator color={appColors.white} />
+                ) : (
+                  <Text style={styles.deleteConfirmButtonText}>Eliminar</Text>
+                )}
               </Pressable>
             </View>
           </View>
@@ -729,15 +896,47 @@ export default function TripsScreen({
       </Modal>
     </View>
   );
-}const styles = StyleSheet.create({
-  screen: {
-    width: '100%',
-    gap: 14,
+}
+
+const styles = StyleSheet.create({
+  container: {
+    gap: 18,
+  },
+  headerCard: {
+    backgroundColor: appColors.surface,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 28,
+    padding: 20,
+    gap: 16,
+  },
+  headerTextBlock: {
+    gap: 6,
+  },
+  eyebrow: {
+    color: appColors.textMuted,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    fontFamily: appFonts.main,
+  },
+  title: {
+    color: appColors.text,
+    fontSize: 32,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  subtitle: {
+    color: appColors.textSecondary,
+    fontSize: 15,
+    lineHeight: 22,
+    fontFamily: appFonts.main,
   },
   addButton: {
     backgroundColor: appColors.white,
-    borderRadius: 20,
-    paddingVertical: 16,
+    borderRadius: 18,
+    paddingVertical: 14,
     alignItems: 'center',
   },
   addButtonText: {
@@ -746,40 +945,14 @@ export default function TripsScreen({
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  emptyCard: {
-    backgroundColor: appColors.surface,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    padding: 24,
-    alignItems: 'center',
-  },
-  emptyIcon: {
-    fontSize: 40,
-    marginBottom: 12,
-  },
-  emptyTitle: {
-    color: appColors.text,
-    fontSize: 21,
-    fontWeight: '900',
-    marginBottom: 8,
-    fontFamily: appFonts.main,
-  },
-  emptyText: {
-    color: appColors.textSecondary,
-    fontSize: 15,
-    lineHeight: 22,
-    textAlign: 'center',
-    fontFamily: appFonts.main,
-  },
   tripsList: {
     gap: 14,
   },
   tripCard: {
     backgroundColor: appColors.surface,
-    borderRadius: 24,
     borderWidth: 1,
     borderColor: appColors.border,
+    borderRadius: 26,
     overflow: 'hidden',
   },
   tripImage: {
@@ -789,114 +962,199 @@ export default function TripsScreen({
   },
   tripImagePlaceholder: {
     width: '100%',
-    height: 150,
+    height: 160,
     backgroundColor: appColors.surfaceSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
   tripImagePlaceholderText: {
-    fontSize: 42,
+    fontSize: 44,
   },
-  tripContent: {
+  tripInfo: {
     padding: 16,
+    gap: 8,
+  },
+  tripTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  tripTitleBlock: {
+    flex: 1,
   },
   tripName: {
     color: appColors.text,
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '900',
-    marginBottom: 5,
     fontFamily: appFonts.main,
   },
   tripProvince: {
-    color: appColors.text,
-    fontSize: 15,
-    fontWeight: '900',
-    marginBottom: 4,
-    fontFamily: appFonts.main,
-  },
-  tripDates: {
     color: appColors.textSecondary,
     fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 10,
+    fontWeight: '800',
+    marginTop: 3,
+    fontFamily: appFonts.main,
+  },
+  visibilityBadge: {
+    backgroundColor: 'rgba(34, 197, 94, 0.13)',
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.32)',
+    borderRadius: 999,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+  },
+  visibilityBadgePrivate: {
+    backgroundColor: 'rgba(122, 122, 122, 0.18)',
+    borderColor: 'rgba(122, 122, 122, 0.4)',
+  },
+  visibilityBadgeText: {
+    color: '#86EFAC',
+    fontSize: 11,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  visibilityBadgeTextPrivate: {
+    color: appColors.textMuted,
+  },
+  tripDate: {
+    color: appColors.textMuted,
+    fontSize: 13,
+    fontWeight: '800',
     fontFamily: appFonts.main,
   },
   tripNotes: {
     color: appColors.textSecondary,
-    fontSize: 15,
-    lineHeight: 22,
-    marginBottom: 14,
+    fontSize: 14,
+    lineHeight: 20,
     fontFamily: appFonts.main,
   },
   tripActions: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
+    marginTop: 4,
   },
-  editButton: {
+  tripActionButton: {
     flex: 1,
-    backgroundColor: appColors.white,
-    borderRadius: 16,
-    paddingVertical: 12,
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 15,
+    paddingVertical: 11,
     alignItems: 'center',
   },
-  editButtonText: {
-    color: appColors.black,
-    fontSize: 14,
+  tripActionButtonText: {
+    color: appColors.text,
+    fontSize: 13,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  deleteButton: {
-    flex: 1,
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
-    borderWidth: 1,
-    borderColor: appColors.home,
-    borderRadius: 16,
-    paddingVertical: 12,
-    alignItems: 'center',
+  tripDeleteButton: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderColor: 'rgba(239, 68, 68, 0.32)',
   },
-  deleteButtonText: {
-    color: appColors.home,
-    fontSize: 14,
+  tripDeleteButtonText: {
+    color: '#FCA5A5',
+  },
+  emptyCard: {
+    backgroundColor: appColors.surface,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 28,
+    padding: 24,
+    alignItems: 'center',
+    gap: 10,
+  },
+  emptyIcon: {
+    fontSize: 48,
+  },
+  emptyTitle: {
+    color: appColors.text,
+    fontSize: 22,
+    fontWeight: '900',
+    textAlign: 'center',
+    fontFamily: appFonts.main,
+  },
+  emptyText: {
+    color: appColors.textSecondary,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    fontFamily: appFonts.main,
+  },
+  emptyButton: {
+    backgroundColor: appColors.white,
+    borderRadius: 17,
+    paddingVertical: 13,
+    paddingHorizontal: 18,
+    marginTop: 4,
+  },
+  emptyButtonText: {
+    color: appColors.black,
+    fontSize: 15,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.86)',
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 20,
+    padding: 18,
   },
   formCard: {
     width: '100%',
-    maxWidth: 430,
-    maxHeight: '90%',
+    maxWidth: 560,
+    maxHeight: '88%',
     backgroundColor: appColors.surface,
-    borderRadius: 28,
+    borderRadius: 30,
     borderWidth: 1,
     borderColor: appColors.border,
-    padding: 18,
+    overflow: 'hidden',
+  },
+  pickerCard: {
+    width: '100%',
+    maxWidth: 520,
+    maxHeight: '82%',
+    backgroundColor: appColors.surface,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    overflow: 'hidden',
+  },
+  calendarCard: {
+    width: '100%',
+    maxWidth: 430,
+    backgroundColor: appColors.surface,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    paddingBottom: 18,
+    overflow: 'hidden',
   },
   formHeader: {
+    padding: 18,
+    borderBottomWidth: 1,
+    borderBottomColor: appColors.border,
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 18,
+    justifyContent: 'space-between',
+    gap: 14,
   },
   formHeaderTextBlock: {
     flex: 1,
   },
   formTitle: {
     color: appColors.text,
-    fontSize: 26,
+    fontSize: 25,
     fontWeight: '900',
-    marginBottom: 6,
     fontFamily: appFonts.main,
   },
   formSubtitle: {
     color: appColors.textSecondary,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 4,
     fontFamily: appFonts.main,
   },
   closeButton: {
@@ -912,218 +1170,159 @@ export default function TripsScreen({
   closeButtonText: {
     color: appColors.text,
     fontSize: 24,
-    fontWeight: '700',
-    lineHeight: 25,
-    fontFamily: appFonts.main,
+    fontWeight: '800',
+    lineHeight: 26,
   },
-  inputBlock: {
-    marginBottom: 14,
+  formContent: {
+    padding: 18,
+    gap: 15,
   },
-  inputLabel: {
+  inputGroup: {
+    gap: 8,
+  },
+  label: {
     color: appColors.text,
     fontSize: 14,
     fontWeight: '900',
-    marginBottom: 8,
     fontFamily: appFonts.main,
   },
   input: {
     backgroundColor: appColors.surfaceSoft,
     borderWidth: 1,
     borderColor: appColors.border,
-    borderRadius: 18,
-    paddingHorizontal: 15,
-    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
+    borderRadius: 17,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
     color: appColors.text,
     fontSize: 15,
-    fontWeight: '700',
     fontFamily: appFonts.main,
   },
   notesInput: {
-    minHeight: 100,
-    lineHeight: 22,
+    minHeight: 96,
   },
-  provinceSelectButton: {
+  selectorButton: {
     backgroundColor: appColors.surfaceSoft,
     borderWidth: 1,
     borderColor: appColors.border,
-    borderRadius: 18,
-    paddingHorizontal: 15,
-    paddingVertical: 14,
+    borderRadius: 17,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
   },
-  provinceSelectText: {
-    flex: 1,
+  selectorButtonText: {
     color: appColors.text,
     fontSize: 15,
-    fontWeight: '900',
+    fontWeight: '800',
     fontFamily: appFonts.main,
   },
-  provinceSelectAction: {
+  selectorButtonIcon: {
     color: appColors.textMuted,
-    fontSize: 13,
+    fontSize: 18,
     fontWeight: '900',
-    fontFamily: appFonts.main,
   },
-  provincePickerOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.86)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  provincePickerCard: {
-    width: '100%',
-    maxWidth: 430,
-    maxHeight: '82%',
-    backgroundColor: appColors.surface,
-    borderRadius: 28,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    padding: 18,
-  },
-  provincePickerHeader: {
+  dateRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 16,
-  },
-  provincePickerTitle: {
-    color: appColors.text,
-    fontSize: 24,
-    fontWeight: '900',
-    marginBottom: 4,
-    fontFamily: appFonts.main,
-  },
-  provincePickerSubtitle: {
-    color: appColors.textSecondary,
-    fontSize: 14,
-    fontFamily: appFonts.main,
-  },
-  provincePickerCloseButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: appColors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  provincePickerCloseButtonText: {
-    color: appColors.text,
-    fontSize: 24,
-    fontWeight: '700',
-    lineHeight: 25,
-    fontFamily: appFonts.main,
-  },
-  provincePickerList: {
-    gap: 8,
-    paddingBottom: 4,
-  },
-  provincePickerItem: {
-    backgroundColor: appColors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    borderRadius: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 15,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 10,
   },
-  provincePickerItemSelected: {
-    backgroundColor: appColors.white,
-    borderColor: appColors.white,
-  },
-  provincePickerItemText: {
-    color: appColors.text,
-    fontSize: 15,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  provincePickerItemTextSelected: {
-    color: appColors.black,
-  },
-  provincePickerCheck: {
-    color: appColors.black,
-    fontSize: 17,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  datesRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  dateInputBlock: {
+  dateColumn: {
     flex: 1,
+    gap: 8,
   },
   dateButton: {
     backgroundColor: appColors.surfaceSoft,
     borderWidth: 1,
     borderColor: appColors.border,
-    borderRadius: 18,
-    paddingHorizontal: 14,
+    borderRadius: 17,
+    paddingHorizontal: 12,
     paddingVertical: 13,
-    minHeight: 54,
-    justifyContent: 'center',
   },
   dateButtonText: {
+    color: appColors.text,
+    fontSize: 14,
+    fontWeight: '800',
+    textAlign: 'center',
+    fontFamily: appFonts.main,
+  },
+  visibilityCard: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 18,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  visibilityTextBlock: {
+    flex: 1,
+  },
+  visibilityTitle: {
+    color: appColors.text,
+    fontSize: 15,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  visibilityDescription: {
+    color: appColors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
+    fontFamily: appFonts.main,
+  },
+  imagePickerBlock: {
+    gap: 10,
+  },
+  formImage: {
+    width: '100%',
+    height: 180,
+    borderRadius: 20,
+    backgroundColor: appColors.surfaceSoft,
+  },
+  formImagePlaceholder: {
+    height: 150,
+    borderRadius: 20,
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  formImagePlaceholderText: {
+    fontSize: 34,
+  },
+  formImagePlaceholderLabel: {
+    color: appColors.textMuted,
+    fontSize: 13,
+    fontWeight: '800',
+    fontFamily: appFonts.main,
+  },
+  secondaryButton: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 17,
+    paddingVertical: 13,
+    alignItems: 'center',
+    minHeight: 48,
+    justifyContent: 'center',
+  },
+  secondaryButtonText: {
     color: appColors.text,
     fontSize: 14,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  dateButtonIcon: {
-    position: 'absolute',
-    right: 12,
-    top: 15,
-    fontSize: 17,
-  },
-  imageButton: {
-    backgroundColor: appColors.white,
-    borderRadius: 18,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  imageButtonText: {
-    color: appColors.black,
-    fontSize: 15,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  formImagePreview: {
-    width: '100%',
-    height: 180,
-    borderRadius: 18,
-    backgroundColor: appColors.surfaceSoft,
-    marginBottom: 14,
-  },
-  errorBox: {
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
-    borderWidth: 1,
-    borderColor: appColors.home,
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 14,
-  },
-  errorText: {
-    color: appColors.home,
-    fontSize: 14,
-    fontWeight: '800',
-    lineHeight: 20,
-    fontFamily: appFonts.main,
-  },
   saveButton: {
     backgroundColor: appColors.white,
-    borderRadius: 18,
+    borderRadius: 17,
     paddingVertical: 15,
     alignItems: 'center',
-    marginBottom: 4,
+    minHeight: 52,
+    justifyContent: 'center',
   },
   saveButtonText: {
     color: appColors.black,
@@ -1131,197 +1330,205 @@ export default function TripsScreen({
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  calendarOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.86)',
+  disabledButton: {
+    opacity: 0.65,
+  },
+  errorMessage: {
+    color: '#FCA5A5',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '800',
+    fontFamily: appFonts.main,
+  },
+  provincePickerList: {
+    padding: 14,
+    gap: 8,
+  },
+  provincePickerItem: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 17,
+    padding: 14,
+  },
+  provincePickerItemActive: {
+    backgroundColor: appColors.white,
+  },
+  provincePickerItemText: {
+    color: appColors.text,
+    fontSize: 15,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  provincePickerItemTextActive: {
+    color: appColors.black,
+  },
+  provincePickerCommunity: {
+    color: appColors.textMuted,
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 4,
+    fontFamily: appFonts.main,
+  },
+  calendarControls: {
+    padding: 16,
+    gap: 12,
+  },
+  calendarYearRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  calendarControlButton: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 14,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+  },
+  calendarControlText: {
+    color: appColors.text,
+    fontSize: 12,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  calendarCurrentYear: {
+    color: appColors.text,
+    fontSize: 18,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  calendarMonthRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  calendarArrowButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 20,
   },
-  calendarCard: {
+  calendarArrowText: {
+    color: appColors.text,
+    fontSize: 28,
+    fontWeight: '800',
+    lineHeight: 30,
+  },
+  calendarCurrentMonth: {
+    color: appColors.text,
+    fontSize: 20,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  weekDaysRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  weekDayText: {
+    flex: 1,
+    color: appColors.textMuted,
+    fontSize: 12,
+    fontWeight: '900',
+    textAlign: 'center',
+    fontFamily: appFonts.main,
+  },
+  calendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 16,
+    gap: 6,
+  },
+  calendarDayEmpty: {
+    width: '13.4%',
+    aspectRatio: 1,
+  },
+  calendarDayButton: {
+    width: '13.4%',
+    aspectRatio: 1,
+    borderRadius: 999,
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarDayButtonActive: {
+    backgroundColor: appColors.white,
+  },
+  calendarDayText: {
+    color: appColors.text,
+    fontSize: 13,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  calendarDayTextActive: {
+    color: appColors.black,
+  },
+  deleteCard: {
     width: '100%',
     maxWidth: 430,
     backgroundColor: appColors.surface,
     borderRadius: 28,
     borderWidth: 1,
     borderColor: appColors.border,
-    padding: 18,
-  },
-  calendarHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 16,
-  },
-  calendarTitle: {
-    color: appColors.text,
-    fontSize: 24,
-    fontWeight: '900',
-    marginBottom: 4,
-    fontFamily: appFonts.main,
-  },
-  calendarSubtitle: {
-    color: appColors.textSecondary,
-    fontSize: 14,
-    fontFamily: appFonts.main,
-  },
-  calendarCloseButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: appColors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  calendarCloseButtonText: {
-    color: appColors.text,
-    fontSize: 24,
-    fontWeight: '700',
-    lineHeight: 25,
-    fontFamily: appFonts.main,
-  },
-  calendarControls: {
-    gap: 10,
-    marginBottom: 16,
-  },
-  calendarControlRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  calendarControlButton: {
-    flex: 1,
-    backgroundColor: appColors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    borderRadius: 16,
-    paddingVertical: 11,
-    alignItems: 'center',
-  },
-  calendarControlText: {
-    color: appColors.text,
-    fontSize: 13,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  calendarYearText: {
-    minWidth: 72,
-    textAlign: 'center',
-    color: appColors.text,
-    fontSize: 18,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  calendarMonthText: {
-    minWidth: 96,
-    textAlign: 'center',
-    color: appColors.text,
-    fontSize: 17,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  weekDaysGrid: {
-    flexDirection: 'row',
-    marginBottom: 8,
-  },
-  weekDayText: {
-    width: `${100 / 7}%`,
-    textAlign: 'center',
-    color: appColors.textMuted,
-    fontSize: 13,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  daysGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    rowGap: 8,
-  },
-  emptyDayCell: {
-    width: `${100 / 7}%`,
-    height: 40,
-  },
-  dayCell: {
-    width: `${100 / 7}%`,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dayCellSelected: {
-    backgroundColor: appColors.white,
-    borderRadius: 20,
-  },
-  dayCellText: {
-    color: appColors.text,
-    fontSize: 15,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  dayCellTextSelected: {
-    color: appColors.black,
-  },
-  deleteModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.86)',
-    alignItems: 'center',
-    justifyContent: 'center',
     padding: 22,
+    alignItems: 'center',
+    gap: 12,
   },
-  deleteModalCard: {
-    width: '100%',
-    maxWidth: 390,
-    backgroundColor: appColors.surface,
-    borderRadius: 26,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    padding: 20,
+  deleteIcon: {
+    fontSize: 44,
   },
-  deleteModalTitle: {
+  deleteTitle: {
     color: appColors.text,
     fontSize: 24,
     fontWeight: '900',
-    marginBottom: 8,
+    textAlign: 'center',
     fontFamily: appFonts.main,
   },
-  deleteModalText: {
+  deleteText: {
     color: appColors.textSecondary,
     fontSize: 15,
     lineHeight: 22,
-    marginBottom: 18,
+    textAlign: 'center',
     fontFamily: appFonts.main,
   },
-  deleteModalActions: {
+  deleteActions: {
     flexDirection: 'row',
     gap: 10,
+    marginTop: 8,
   },
-  cancelDeleteButton: {
+  deleteCancelButton: {
     flex: 1,
     backgroundColor: appColors.surfaceSoft,
     borderWidth: 1,
     borderColor: appColors.border,
-    borderRadius: 16,
+    borderRadius: 17,
     paddingVertical: 13,
     alignItems: 'center',
   },
-  cancelDeleteButtonText: {
+  deleteCancelButtonText: {
     color: appColors.text,
     fontSize: 14,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  confirmDeleteButton: {
+  deleteConfirmButton: {
     flex: 1,
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
-    borderWidth: 1,
-    borderColor: appColors.home,
-    borderRadius: 16,
+    backgroundColor: '#EF4444',
+    borderRadius: 17,
     paddingVertical: 13,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  confirmDeleteButtonText: {
-    color: appColors.home,
+  deleteConfirmButtonText: {
+    color: appColors.white,
     fontSize: 14,
     fontWeight: '900',
     fontFamily: appFonts.main,

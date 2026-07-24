@@ -1,7 +1,6 @@
-import LegalFooter from '@/components/LegalFooter';
 import type { Session } from '@supabase/supabase-js';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,34 +12,38 @@ import {
   Text,
   View,
 } from 'react-native';
-import AppHeader from '../components/AppHeader';
+
 import AuthScreen from '../components/AuthScreen';
 import ChallengesScreen from '../components/ChallengesScreen';
 import ErrorState from '../components/ErrorState';
 import FriendsScreen from '../components/FriendsScreen';
+import LegalFooter from '../components/LegalFooter';
 import ProvincesScreen from '../components/ProvincesScreen';
+import SettingsModal from '../components/SettingsModal';
 import SpainProvinceMap, {
   ProvinceStatus,
 } from '../components/SpainProvinceMap';
-import TripsScreen, { type Trip } from '../components/TripsScreen';
+import TripsScreen, { Trip } from '../components/TripsScreen';
+
 import { challenges } from '../data/challenges';
-import { provinces as allProvinces } from '../data/provinces';
+import { provinces } from '../data/provinces';
 import { deleteAccount } from '../lib/account';
 import {
   isSupabaseProfileImageUrl,
   uploadProfileImage,
 } from '../lib/profileImages';
-import { fetchProfile, updateProfileAvatar } from '../lib/profiles';
+import {
+  fetchProfile,
+  updateProfileAvatar,
+  updateProfileName,
+} from '../lib/profiles';
 import {
   fetchProvinceStatuses,
   removeProvinceStatus,
   upsertProvinceStatus,
 } from '../lib/provinceStatuses';
 import { supabase } from '../lib/supabase';
-import {
-  isSupabaseTripImageUrl,
-  uploadTripImage,
-} from '../lib/tripImages';
+import { isSupabaseTripImageUrl, uploadTripImage } from '../lib/tripImages';
 import {
   createTrip,
   deleteTripFromSupabase,
@@ -49,65 +52,156 @@ import {
 } from '../lib/trips';
 import { appColors, appFonts } from '../theme';
 
-type ActiveTab =
-  | 'map'
-  | 'provinces'
-  | 'trips'
-  | 'challenges'
-  | 'friends'
-  | 'profile';
+type TabId = 'map' | 'provinces' | 'trips' | 'challenges' | 'friends' | 'profile';
 
-function fromIsoDate(isoDate: string) {
-  const [year, month, day] = isoDate.split('-').map(Number);
+const tabs: { id: TabId; label: string; icon: string }[] = [
+  { id: 'map', label: 'Mapa', icon: '🗺️' },
+  { id: 'provinces', label: 'Provincias', icon: '📍' },
+  { id: 'trips', label: 'Viajes', icon: '✈️' },
+  { id: 'challenges', label: 'Retos', icon: '🏆' },
+  { id: 'friends', label: 'Amigos', icon: '👥' },
+  { id: 'profile', label: 'Perfil', icon: '👤' },
+];
 
-  return new Date(year, month - 1, day);
+const ProvincesScreenView = ProvincesScreen as any;
+const TripsScreenView = TripsScreen as any;
+const ChallengesScreenView = ChallengesScreen as any;
+const FriendsScreenView = FriendsScreen as any;
+
+function getProvinceName(provinceId?: string) {
+  if (!provinceId) {
+    return 'Sin provincia';
+  }
+
+  return (
+    provinces.find((province) => province.id === provinceId)?.name ??
+    provinceId
+  );
 }
 
-function formatDate(isoDate: string) {
-  if (!isoDate) {
+function formatDate(date: string) {
+  if (!date) {
     return '';
   }
 
-  const date = fromIsoDate(isoDate);
-  const day = `${date.getDate()}`.padStart(2, '0');
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const year = date.getFullYear();
+  const [year, month, day] = date.split('-');
+
+  if (!year || !month || !day) {
+    return date;
+  }
 
   return `${day}/${month}/${year}`;
 }
 
-function getProvinceName(provinceId: string) {
+function getTripDateText(trip: Trip) {
+  if (trip.startDate === trip.endDate) {
+    return formatDate(trip.startDate);
+  }
+
+  return `${formatDate(trip.startDate)} - ${formatDate(trip.endDate)}`;
+}
+
+function getChallengeProvinceIds(challenge: any) {
   return (
-    allProvinces.find((province) => province.id === provinceId)?.name ?? ''
+    challenge.provinceIds ??
+    challenge.provinces ??
+    challenge.requiredProvinceIds ??
+    []
   );
+}
+
+function getChallengeTitle(challenge: any) {
+  return challenge.title ?? challenge.name ?? 'Reto completado';
 }
 
 export default function HomeScreen() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
+
   const [profileName, setProfileName] = useState('');
-  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | undefined>(
-    undefined
-  );
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | undefined>();
   const [isProfileImageLoading, setIsProfileImageLoading] = useState(false);
+
+  const [isSettingsVisible, setIsSettingsVisible] = useState(false);
+  const [isProfileNameSaving, setIsProfileNameSaving] = useState(false);
+
   const [isUserDataLoading, setIsUserDataLoading] = useState(false);
   const [loadErrorMessage, setLoadErrorMessage] = useState('');
 
   const [provinceStatuses, setProvinceStatuses] = useState<
     Record<string, ProvinceStatus>
   >({});
-
   const [trips, setTrips] = useState<Trip[]>([]);
+
+  const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
   const [selectedProfileTrip, setSelectedProfileTrip] = useState<Trip | null>(
     null
   );
 
-  const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('map');
+  const [activeTab, setActiveTab] = useState<TabId>('map');
 
-  async function loadUserData() {
-    if (!session?.user.id) {
+  const userId = session?.user.id;
+
+  const visitedCount = useMemo(
+    () =>
+      Object.values(provinceStatuses).filter(
+        (status) => status === 'visited' || status === 'home'
+      ).length,
+    [provinceStatuses]
+  );
+
+  const wishlistCount = useMemo(
+    () =>
+      Object.values(provinceStatuses).filter((status) => status === 'wishlist')
+        .length,
+    [provinceStatuses]
+  );
+
+  const homeProvince = useMemo(() => {
+    const homeProvinceId = Object.entries(provinceStatuses).find(
+      ([, status]) => status === 'home'
+    )?.[0];
+
+    return getProvinceName(homeProvinceId);
+  }, [provinceStatuses]);
+
+  const progress = Math.round((visitedCount / provinces.length) * 100);
+
+  const latestTrips = trips.slice(0, 3);
+
+  const completedChallenges = useMemo(() => {
+    return (challenges as any[]).filter((challenge) => {
+      const provinceIds = getChallengeProvinceIds(challenge);
+
+      if (!Array.isArray(provinceIds) || provinceIds.length === 0) {
+        return false;
+      }
+
+      return provinceIds.every((provinceId: string) => {
+        const status = provinceStatuses[provinceId];
+
+        return status === 'visited' || status === 'home';
+      });
+    });
+  }, [provinceStatuses]);
+
+  const latestMedals = completedChallenges.slice(0, 6);
+
+  const resetUserData = useCallback(() => {
+    setProfileName('');
+    setProfileAvatarUrl(undefined);
+    setProvinceStatuses({});
+    setTrips([]);
+    setSelectedProvince(null);
+    setSelectedProfileTrip(null);
+    setLoadErrorMessage('');
+    setIsSettingsVisible(false);
+    setActiveTab('map');
+  }, []);
+
+  const loadUserData = useCallback(async () => {
+    if (!userId) {
       return;
     }
 
@@ -115,146 +209,134 @@ export default function HomeScreen() {
       setIsUserDataLoading(true);
       setLoadErrorMessage('');
 
-      const [savedStatuses, savedTrips, savedProfile] = await Promise.all([
-        fetchProvinceStatuses(session.user.id),
-        fetchTrips(session.user.id),
-        fetchProfile(session.user.id),
+      const [statusesResult, tripsResult, profileResult] = await Promise.all([
+        fetchProvinceStatuses(userId),
+        fetchTrips(userId),
+        fetchProfile(userId),
       ]);
 
-      setProvinceStatuses(savedStatuses);
-      setTrips(savedTrips);
-      setProfileName(
-        savedProfile.name ||
-          session.user.user_metadata?.name ||
-          session.user.email?.split('@')[0] ||
-          'Usuario'
-      );
-      setProfileAvatarUrl(savedProfile.avatarUrl);
+      setProvinceStatuses(statusesResult);
+      setTrips(tripsResult);
+      setProfileName(profileResult.name || 'Usuario');
+      setProfileAvatarUrl(profileResult.avatarUrl);
     } catch (error) {
-      console.log('Error loading user data:', error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo cargar la información.';
 
-      setProfileName(
-        session.user.user_metadata?.name ||
-          session.user.email?.split('@')[0] ||
-          'Usuario'
-      );
-
-      setLoadErrorMessage(
-        'No se pudieron cargar tus provincias, viajes o perfil. Revisa la conexión e inténtalo de nuevo.'
-      );
+      setLoadErrorMessage(message);
     } finally {
       setIsUserDataLoading(false);
     }
-  }
+  }, [userId]);
 
   useEffect(() => {
-    async function loadSession() {
-      const { data } = await supabase.auth.getSession();
+    let isMounted = true;
 
-      setSession(data.session);
-      setIsAuthenticated(Boolean(data.session));
-      setIsAuthLoading(false);
+    async function loadSession() {
+      try {
+        const { data } = await supabase.auth.getSession();
+
+        if (!isMounted) {
+          return;
+        }
+
+        setSession(data.session);
+        setIsAuthenticated(Boolean(data.session));
+      } finally {
+        if (isMounted) {
+          setIsAuthLoading(false);
+        }
+      }
     }
 
     loadSession();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, currentSession) => {
-      setSession(currentSession);
-      setIsAuthenticated(Boolean(currentSession));
-      setIsAuthLoading(false);
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setIsAuthenticated(Boolean(nextSession));
 
-      if (!currentSession) {
-        setProvinceStatuses({});
-        setTrips([]);
-        setSelectedProfileTrip(null);
-        setProfileName('');
-        setProfileAvatarUrl(undefined);
-        setLoadErrorMessage('');
-        setIsUserDataLoading(false);
+      if (!nextSession) {
+        resetUserData();
       }
     });
 
     return () => {
+      isMounted = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, [resetUserData]);
 
   useEffect(() => {
-    loadUserData();
-  }, [session?.user.id]);
+    if (userId) {
+      loadUserData();
+    }
+  }, [userId, loadUserData]);
 
-  async function setProvinceStatus(id: string, status: ProvinceStatus) {
-    setSelectedProvince(id);
-
-    setProvinceStatuses((currentStatuses) => ({
-      ...currentStatuses,
-      [id]: status,
-    }));
-
-    if (!session?.user.id) {
+  async function handleSetProvinceStatus(
+    provinceId: string,
+    status: ProvinceStatus
+  ) {
+    if (!userId) {
       return;
     }
 
+    const previousStatuses = provinceStatuses;
+
     try {
-      await upsertProvinceStatus(session.user.id, id, status);
+      setProvinceStatuses((currentStatuses) => ({
+        ...currentStatuses,
+        [provinceId]: status,
+      }));
+
+      await upsertProvinceStatus(userId, provinceId, status);
       setLoadErrorMessage('');
     } catch (error) {
-      console.log('Error saving province status:', error);
+      setProvinceStatuses(previousStatuses);
 
-      setLoadErrorMessage(
-        'No se pudo guardar el estado de la provincia. Inténtalo de nuevo.'
-      );
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo actualizar la provincia.';
+
+      setLoadErrorMessage(message);
     }
   }
 
-  async function clearProvinceStatus(id: string) {
-    setProvinceStatuses((currentStatuses) => {
-      const updatedStatuses = { ...currentStatuses };
-      delete updatedStatuses[id];
-      return updatedStatuses;
-    });
-
-    if (!session?.user.id) {
+  async function handleClearProvinceStatus(provinceId: string) {
+    if (!userId) {
       return;
     }
 
+    const previousStatuses = provinceStatuses;
+
     try {
-      await removeProvinceStatus(session.user.id, id);
+      setProvinceStatuses((currentStatuses) => {
+        const updatedStatuses = { ...currentStatuses };
+        delete updatedStatuses[provinceId];
+
+        return updatedStatuses;
+      });
+
+      await removeProvinceStatus(userId, provinceId);
       setLoadErrorMessage('');
     } catch (error) {
-      console.log('Error removing province status:', error);
+      setProvinceStatuses(previousStatuses);
 
-      setLoadErrorMessage(
-        'No se pudo borrar el estado de la provincia. Inténtalo de nuevo.'
-      );
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo quitar el estado de la provincia.';
+
+      setLoadErrorMessage(message);
     }
   }
 
-  async function markTripProvinceAsVisited(provinceId: string) {
-    if (provinceStatuses[provinceId] === 'home') {
-      return;
-    }
-
-    setProvinceStatuses((currentStatuses) => ({
-      ...currentStatuses,
-      [provinceId]: 'visited',
-    }));
-
-    if (!session?.user.id) {
-      return;
-    }
-
-    try {
-      await upsertProvinceStatus(session.user.id, provinceId, 'visited');
-    } catch (error) {
-      console.log('Error saving trip province status:', error);
-    }
-  }
-
-  async function getSavedTripImageUri(imageUri?: string) {
-    if (!imageUri || !session?.user.id) {
+  async function saveTripImageIfNeeded(imageUri?: string) {
+    if (!userId || !imageUri) {
       return imageUri;
     }
 
@@ -262,108 +344,104 @@ export default function HomeScreen() {
       return imageUri;
     }
 
-    return uploadTripImage(session.user.id, imageUri);
+    return uploadTripImage(userId, imageUri);
   }
 
-  async function addTrip(trip: Trip) {
-    if (!session?.user.id) {
-      setTrips((currentTrips) => [trip, ...currentTrips]);
+  async function handleAddTrip(trip: Trip) {
+    if (!userId) {
       return;
     }
 
     try {
-      const savedImageUri = await getSavedTripImageUri(trip.imageUri);
+      const savedImageUri = await saveTripImageIfNeeded(trip.imageUri);
 
-      const tripToSave: Trip = {
+      const savedTrip = await createTrip(userId, {
         ...trip,
         imageUri: savedImageUri,
-      };
-
-      const savedTrip = await createTrip(session.user.id, tripToSave);
+      });
 
       setTrips((currentTrips) => [savedTrip, ...currentTrips]);
+
+      if (provinceStatuses[savedTrip.provinceId] !== 'home') {
+        setProvinceStatuses((currentStatuses) => ({
+          ...currentStatuses,
+          [savedTrip.provinceId]: 'visited',
+        }));
+
+        await upsertProvinceStatus(userId, savedTrip.provinceId, 'visited');
+      }
+
       setLoadErrorMessage('');
     } catch (error) {
-      console.log('Error creating trip:', error);
+      const message =
+        error instanceof Error ? error.message : 'No se pudo crear el viaje.';
 
-      setLoadErrorMessage(
-        'No se pudo guardar el viaje. Revisa la conexión e inténtalo de nuevo.'
-      );
+      setLoadErrorMessage(message);
     }
   }
 
-  async function updateTrip(updatedTrip: Trip) {
-    setTrips((currentTrips) =>
-      currentTrips.map((trip) =>
-        trip.id === updatedTrip.id ? updatedTrip : trip
-      )
-    );
-
-    setSelectedProfileTrip((currentTrip) =>
-      currentTrip?.id === updatedTrip.id ? updatedTrip : currentTrip
-    );
-
-    if (!session?.user.id) {
+  async function handleUpdateTrip(trip: Trip) {
+    if (!userId) {
       return;
     }
 
     try {
-      const savedImageUri = await getSavedTripImageUri(updatedTrip.imageUri);
+      const savedImageUri = await saveTripImageIfNeeded(trip.imageUri);
 
-      const tripToSave: Trip = {
-        ...updatedTrip,
+      const updatedTrip = await updateTripInSupabase(userId, {
+        ...trip,
         imageUri: savedImageUri,
-      };
-
-      const savedTrip = await updateTripInSupabase(session.user.id, tripToSave);
+      });
 
       setTrips((currentTrips) =>
-        currentTrips.map((trip) =>
-          trip.id === savedTrip.id ? savedTrip : trip
+        currentTrips.map((currentTrip) =>
+          currentTrip.id === updatedTrip.id ? updatedTrip : currentTrip
         )
       );
 
-      setSelectedProfileTrip((currentTrip) =>
-        currentTrip?.id === savedTrip.id ? savedTrip : currentTrip
-      );
+      if (provinceStatuses[updatedTrip.provinceId] !== 'home') {
+        setProvinceStatuses((currentStatuses) => ({
+          ...currentStatuses,
+          [updatedTrip.provinceId]: 'visited',
+        }));
+
+        await upsertProvinceStatus(userId, updatedTrip.provinceId, 'visited');
+      }
 
       setLoadErrorMessage('');
     } catch (error) {
-      console.log('Error updating trip:', error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo actualizar el viaje.';
 
-      setLoadErrorMessage('No se pudo actualizar el viaje. Inténtalo de nuevo.');
+      setLoadErrorMessage(message);
     }
-  }  async function deleteTrip(tripId: string) {
-    const tripToDelete = trips.find((trip) => trip.id === tripId);
-
-    setTrips((currentTrips) =>
-      currentTrips.filter((trip) => trip.id !== tripId)
-    );
-
-    setSelectedProfileTrip((currentTrip) =>
-      currentTrip?.id === tripId ? null : currentTrip
-    );
-
-    if (!session?.user.id) {
+  }  async function handleDeleteTrip(tripId: string) {
+    if (!userId) {
       return;
     }
 
     try {
-      await deleteTripFromSupabase(session.user.id, tripId);
+      await deleteTripFromSupabase(userId, tripId);
+
+      setTrips((currentTrips) =>
+        currentTrips.filter((trip) => trip.id !== tripId)
+      );
+
       setLoadErrorMessage('');
     } catch (error) {
-      console.log('Error deleting trip:', error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo eliminar el viaje.';
 
-      if (tripToDelete) {
-        setTrips((currentTrips) => [tripToDelete, ...currentTrips]);
-      }
-
-      setLoadErrorMessage('No se pudo eliminar el viaje. Inténtalo de nuevo.');
+      setLoadErrorMessage(message);
     }
   }
 
   async function handleChangeProfileImage() {
-    if (!session?.user.id || isProfileImageLoading) {
+    if (!userId || isProfileImageLoading) {
       return;
     }
 
@@ -374,7 +452,7 @@ export default function HomeScreen() {
       if (!permissionResult.granted) {
         Alert.alert(
           'Permiso necesario',
-          'Necesitamos acceso a tus fotos para cambiar la imagen de perfil.'
+          'Necesitamos permiso para acceder a tus fotos.'
         );
         return;
       }
@@ -398,75 +476,63 @@ export default function HomeScreen() {
 
       const savedAvatarUrl = isSupabaseProfileImageUrl(selectedImageUri)
         ? selectedImageUri
-        : await uploadProfileImage(session.user.id, selectedImageUri);
+        : await uploadProfileImage(userId, selectedImageUri);
 
-      await updateProfileAvatar(session.user.id, savedAvatarUrl);
+      await updateProfileAvatar(userId, savedAvatarUrl);
 
       setProfileAvatarUrl(`${savedAvatarUrl}?t=${Date.now()}`);
       setLoadErrorMessage('');
 
       Alert.alert('Foto actualizada', 'Tu foto de perfil se ha cambiado.');
     } catch (error) {
-      console.log('Error changing profile image:', error);
-
-      Alert.alert(
-        'No se pudo cambiar la foto',
+      const message =
         error instanceof Error
           ? error.message
-          : 'Inténtalo de nuevo en unos segundos.'
-      );
+          : 'No se pudo cambiar la foto de perfil.';
+
+      Alert.alert('Error', message);
     } finally {
       setIsProfileImageLoading(false);
     }
   }
 
-  async function handleLogout() {
-    await supabase.auth.signOut();
+  async function handleSaveProfileName(newName: string) {
+    if (!userId) {
+      throw new Error('No hay sesión activa.');
+    }
 
-    setSession(null);
-    setIsAuthenticated(false);
-    setProfileName('');
-    setProfileAvatarUrl(undefined);
-    setProvinceStatuses({});
-    setTrips([]);
-    setActiveTab('map');
-    setSelectedProvince(null);
-    setSelectedProfileTrip(null);
-    setLoadErrorMessage('');
-    setIsUserDataLoading(false);
-  }
-
-  async function confirmDeleteAccount() {
     try {
-      await deleteAccount();
+      setIsProfileNameSaving(true);
 
-      await supabase.auth.signOut();
+      await updateProfileName(userId, newName);
 
-      setSession(null);
-      setIsAuthenticated(false);
-      setProfileName('');
-      setProfileAvatarUrl(undefined);
-      setProvinceStatuses({});
-      setTrips([]);
-      setActiveTab('map');
-      setSelectedProvince(null);
-      setSelectedProfileTrip(null);
+      setProfileName(newName);
       setLoadErrorMessage('');
-      setIsUserDataLoading(false);
-    } catch (error) {
-      console.log('Error deleting account:', error);
-
-      Alert.alert(
-        'No se pudo eliminar la cuenta',
-        'Inténtalo de nuevo en unos segundos.'
-      );
+    } finally {
+      setIsProfileNameSaving(false);
     }
   }
 
-  function handleDeleteAccount() {
+  async function handleSignOut() {
+    try {
+      await supabase.auth.signOut();
+      setSession(null);
+      setIsAuthenticated(false);
+      resetUserData();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No se pudo cerrar sesión.';
+
+      Alert.alert('Error', message);
+    }
+  }
+
+  async function handleDeleteAccount() {
     Alert.alert(
       'Eliminar cuenta',
-      'Esta acción borrará tu usuario, tus provincias, tus viajes y tus imágenes. No se puede deshacer.',
+      'Esta acción eliminará tu cuenta y los datos asociados. No se puede deshacer.',
       [
         {
           text: 'Cancelar',
@@ -475,618 +541,551 @@ export default function HomeScreen() {
         {
           text: 'Eliminar',
           style: 'destructive',
-          onPress: confirmDeleteAccount,
+          onPress: async () => {
+            try {
+              await deleteAccount();
+              await supabase.auth.signOut();
+
+              setSession(null);
+              setIsAuthenticated(false);
+              resetUserData();
+            } catch (error) {
+              const message =
+                error instanceof Error
+                  ? error.message
+                  : 'No se pudo eliminar la cuenta.';
+
+              Alert.alert('Error', message);
+            }
+          },
         },
       ]
     );
   }
 
-  const visitedIds = Object.entries(provinceStatuses)
-    .filter(([, status]) => status === 'visited' || status === 'home')
-    .map(([id]) => id);
+  function renderAvatar(size: number) {
+    if (profileAvatarUrl) {
+      return (
+        <Image
+          source={{ uri: profileAvatarUrl }}
+          style={[
+            styles.avatarImage,
+            {
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+            },
+          ]}
+        />
+      );
+    }
 
-  const visitedCount = visitedIds.length;
-
-  const wishlistCount = Object.values(provinceStatuses).filter(
-    (status) => status === 'wishlist'
-  ).length;
-
-  const totalCount = allProvinces.length;
-
-  const progress =
-    totalCount > 0 ? Math.round((visitedCount / totalCount) * 100) : 0;
-
-  const completedChallengesCount = challenges.filter((challenge) =>
-    challenge.provinceIds.every((provinceId) => {
-      const status = provinceStatuses[provinceId];
-      return status === 'visited' || status === 'home';
-    })
-  ).length;
-
-  const totalChallengesCount = challenges.length;
-
-  const headerContent =
-    activeTab === 'map'
-      ? {
-          title: 'Mapa',
-          subtitle: `Has visitado ${visitedCount} de ${totalCount} provincias.`,
-        }
-      : activeTab === 'provinces'
-        ? {
-            title: 'Provincias',
-            subtitle: 'Explora todas las provincias de España.',
-          }
-        : activeTab === 'trips'
-          ? {
-              title: 'Viajes',
-              subtitle: 'Guarda tus escapadas y recuerdos por España.',
-            }
-          : activeTab === 'challenges'
-            ? {
-                title: 'Retos',
-                subtitle: 'Completa rutas, comunidades y objetivos viajeros.',
-              }
-            : activeTab === 'friends'
-              ? {
-                  title: 'Amigos',
-                  subtitle: 'Busca usuarios y comparte tu progreso.',
-                }
-              : {
-                  title: 'Perfil',
-                  subtitle: 'Tu resumen personal de viajes por España.',
-                };
-
-  if (isAuthLoading) {
     return (
-      <View style={styles.loadingScreen}>
-        <ActivityIndicator color={appColors.white} />
-        <Text style={styles.loadingText}>Cargando sesión...</Text>
+      <View
+        style={[
+          styles.avatarPlaceholder,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+          },
+        ]}
+      >
+        <Text style={styles.avatarPlaceholderText}>
+          {(profileName || 'U').charAt(0).toUpperCase()}
+        </Text>
       </View>
     );
   }
 
-  if (!isAuthenticated) {
-    return <AuthScreen onAuthSuccess={() => setIsAuthenticated(true)} />;
+  function renderLoadingCard() {
+    return (
+      <View style={styles.loadingCard}>
+        <ActivityIndicator color={appColors.white} size="large" />
+
+        <Text style={styles.loadingTitle}>Cargando SpainApp</Text>
+
+        <Text style={styles.loadingText}>
+          Estamos preparando tu mapa, viajes y perfil.
+        </Text>
+      </View>
+    );
   }
 
-  return (
-    <View style={styles.appBackground}>
-      <ScrollView
-        style={styles.screen}
-        contentContainerStyle={styles.container}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.phoneFrame}>
-          <AppHeader
-            title={headerContent.title}
-            subtitle={headerContent.subtitle}
-          />
+  function renderProfileScreen() {
+    return (
+      <View style={styles.profileContainer}>
+        <View style={styles.profileHeroCard}>
+          <Pressable
+            style={styles.avatarButton}
+            onPress={handleChangeProfileImage}
+            disabled={isProfileImageLoading}
+          >
+            {renderAvatar(96)}
 
-          {isUserDataLoading ? (
-            <View style={styles.loadingCard}>
-              <ActivityIndicator color={appColors.white} />
-              <Text style={styles.loadingCardText}>Cargando tus datos...</Text>
+            <View style={styles.avatarEditBadge}>
+              {isProfileImageLoading ? (
+                <ActivityIndicator color={appColors.black} size="small" />
+              ) : (
+                <Text style={styles.avatarEditBadgeText}>📷</Text>
+              )}
             </View>
-          ) : loadErrorMessage ? (
-            <ErrorState
-              title="No se pudieron cargar tus datos"
-              message={loadErrorMessage}
-              buttonText="Reintentar"
-              onRetry={loadUserData}
+          </Pressable>
+
+          <Text style={styles.profileName}>{profileName || 'Usuario'}</Text>
+
+          <Text style={styles.profileSubtitle}>
+            {visitedCount} provincias visitadas de {provinces.length}
+          </Text>
+
+          <View style={styles.profileProgressBar}>
+            <View
+              style={[
+                styles.profileProgressFill,
+                {
+                  width: `${progress}%`,
+                },
+              ]}
             />
-          ) : activeTab === 'map' ? (
-            <SpainProvinceMap
-              provinceStatuses={provinceStatuses}
-              onSelectProvince={setSelectedProvince}
-              onSetProvinceStatus={setProvinceStatus}
-              onClearProvinceStatus={clearProvinceStatus}
-              selectedProvince={selectedProvince}
-            />
-          ) : activeTab === 'provinces' ? (
-            <ProvincesScreen provinceStatuses={provinceStatuses} />
-          ) : activeTab === 'trips' ? (
-            <TripsScreen
-              trips={trips}
-              onAddTrip={addTrip}
-              onUpdateTrip={updateTrip}
-              onDeleteTrip={deleteTrip}
-              onTripProvinceSaved={markTripProvinceAsVisited}
-            />
-          ) : activeTab === 'challenges' ? (
-            <ChallengesScreen provinceStatuses={provinceStatuses} />
-          ) : activeTab === 'friends' && session?.user.id ? (
-            <FriendsScreen userId={session.user.id} />
-          ) : (
-            <>
-              <View style={styles.profileCard}>
-                <Pressable
-                  style={styles.avatarButton}
-                  onPress={handleChangeProfileImage}
-                  disabled={isProfileImageLoading}
+          </View>
+
+          <Text style={styles.profileProgressText}>{progress}% completado</Text>
+
+          <Pressable
+            style={styles.profileSettingsButton}
+            onPress={() => setIsSettingsVisible(true)}
+          >
+            <Text style={styles.profileSettingsButtonText}>
+              Editar perfil y ajustes
+            </Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.statsGrid}>
+          <View style={styles.statCard}>
+            <Text style={styles.statValue}>{visitedCount}</Text>
+            <Text style={styles.statLabel}>Visitadas</Text>
+          </View>
+
+          <View style={styles.statCard}>
+            <Text style={styles.statValue}>{wishlistCount}</Text>
+            <Text style={styles.statLabel}>Quiero ir</Text>
+          </View>
+
+          <View style={styles.statCard}>
+            <Text style={styles.statValue}>{trips.length}</Text>
+            <Text style={styles.statLabel}>Viajes</Text>
+          </View>
+
+          <View style={styles.statCard}>
+            <Text style={styles.statValue}>{homeProvince}</Text>
+            <Text style={styles.statLabel}>Vivo aquí</Text>
+          </View>
+        </View>
+
+        <View style={styles.profileSection}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionTitleBlock}>
+              <Text style={styles.sectionTitle}>Medallas conseguidas</Text>
+              <Text style={styles.sectionSubtitle}>
+                {completedChallenges.length} retos completados
+              </Text>
+            </View>
+
+            <Pressable onPress={() => setActiveTab('challenges')}>
+              <Text style={styles.sectionAction}>Ver retos</Text>
+            </Pressable>
+          </View>
+
+          {latestMedals.length > 0 ? (
+            <View style={styles.medalsGrid}>
+              {latestMedals.map((challenge: any) => (
+                <View
+                  key={challenge.id ?? getChallengeTitle(challenge)}
+                  style={styles.medalCard}
                 >
-                  {profileAvatarUrl ? (
+                  <View style={styles.medalIcon}>
+                    <Text style={styles.medalIconText}>🏅</Text>
+                  </View>
+
+                  <Text style={styles.medalTitle} numberOfLines={2}>
+                    {getChallengeTitle(challenge)}
+                  </Text>
+
+                  <Text style={styles.medalSubtitle}>Completado</Text>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>Todavía no tienes medallas</Text>
+
+              <Text style={styles.emptyText}>
+                Completa retos visitando provincias para desbloquear tus
+                primeras medallas.
+              </Text>
+
+              <Pressable
+                style={styles.emptyButton}
+                onPress={() => setActiveTab('challenges')}
+              >
+                <Text style={styles.emptyButtonText}>Ver retos</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.profileSection}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionTitleBlock}>
+              <Text style={styles.sectionTitle}>Mis últimos viajes</Text>
+              <Text style={styles.sectionSubtitle}>
+                Tus viajes más recientes
+              </Text>
+            </View>
+
+            <Pressable onPress={() => setActiveTab('trips')}>
+              <Text style={styles.sectionAction}>Ver todos</Text>
+            </Pressable>
+          </View>
+
+          {latestTrips.length > 0 ? (
+            <View style={styles.tripPreviewList}>
+              {latestTrips.map((trip) => (
+                <Pressable
+                  key={trip.id}
+                  style={styles.tripPreviewCard}
+                  onPress={() => setSelectedProfileTrip(trip)}
+                >
+                  {trip.imageUri ? (
                     <Image
-                      source={{ uri: profileAvatarUrl }}
-                      style={styles.avatarImage}
-                      resizeMode="cover"
+                      source={{ uri: trip.imageUri }}
+                      style={styles.tripPreviewImage}
                     />
                   ) : (
-                    <View style={styles.avatar}>
-                      <Text style={styles.avatarText}>
-                        {(profileName || 'U').charAt(0).toUpperCase()}
+                    <View style={styles.tripPreviewImagePlaceholder}>
+                      <Text style={styles.tripPreviewImagePlaceholderText}>
+                        ✈️
                       </Text>
                     </View>
                   )}
 
-                  <View style={styles.avatarEditBadge}>
-                    {isProfileImageLoading ? (
-                      <ActivityIndicator color={appColors.black} size="small" />
-                    ) : (
-                      <Text style={styles.avatarEditBadgeText}>＋</Text>
-                    )}
+                  <View style={styles.tripPreviewInfo}>
+                    <Text style={styles.tripPreviewName}>{trip.name}</Text>
+
+                    <Text style={styles.tripPreviewMeta}>
+                      {getProvinceName(trip.provinceId)}
+                    </Text>
+
+                    <Text style={styles.tripPreviewDate}>
+                      {getTripDateText(trip)}
+                    </Text>
                   </View>
                 </Pressable>
+              ))}
+            </View>
+          ) : (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>Todavía no tienes viajes</Text>
 
-                <View style={styles.profileInfoBlock}>
-                  <Text style={styles.profileName}>
-                    {profileName || 'Usuario'}
-                  </Text>
-                  <Text style={styles.profileSubtitle}>
-                    Toca la foto para cambiarla
-                  </Text>
-                </View>
-
-                <Pressable
-                  style={styles.profileLogoutButton}
-                  onPress={handleLogout}
-                >
-                  <Text style={styles.profileLogoutButtonText}>Salir</Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.completionCard}>
-                <View style={styles.completionHeader}>
-                  <View>
-                    <Text style={styles.completionNumber}>{progress}%</Text>
-                    <Text style={styles.completionLabel}>Completado</Text>
-                  </View>
-
-                  <Text style={styles.completionCounter}>
-                    {visitedCount} / {totalCount}
-                  </Text>
-                </View>
-
-                <View style={styles.progressBar}>
-                  <View
-                    style={[styles.progressFill, { width: `${progress}%` }]}
-                  />
-                </View>
-              </View>
-
-              <View style={styles.summaryGrid}>
-                <View style={styles.summaryCard}>
-                  <Text style={styles.summaryNumber}>{visitedCount}</Text>
-                  <Text style={styles.summaryLabel}>Visitadas</Text>
-                </View>
-
-                <View style={styles.summaryCard}>
-                  <Text style={styles.summaryNumber}>{wishlistCount}</Text>
-                  <Text style={styles.summaryLabel}>Quiero ir</Text>
-                </View>
-              </View>              <View style={styles.profileChallengesCard}>
-                <View style={styles.profileChallengesTextBlock}>
-                  <Text style={styles.profileChallengesTitle}>
-                    Retos completados
-                  </Text>
-
-                  <Text style={styles.profileChallengesSubtitle}>
-                    Has completado {completedChallengesCount} de{' '}
-                    {totalChallengesCount} retos.
-                  </Text>
-                </View>
-
-                <Text style={styles.profileChallengesNumber}>
-                  {completedChallengesCount}/{totalChallengesCount}
-                </Text>
-              </View>
-
-              <View style={styles.profileTripsCard}>
-                <View style={styles.profileTripsHeader}>
-                  <View style={styles.profileTripsTitleBlock}>
-                    <Text style={styles.profileTripsTitle}>Mis viajes</Text>
-
-                    <Text style={styles.profileTripsSubtitle}>
-                      Resumen de tus escapadas guardadas
-                    </Text>
-                  </View>
-
-                  <View style={styles.profileTripsCountPill}>
-                    <Text style={styles.profileTripsCountText}>
-                      {trips.length}
-                    </Text>
-                  </View>
-                </View>
-
-                {trips.length === 0 ? (
-                  <View style={styles.profileTripsEmptyCard}>
-                    <Text style={styles.profileTripsEmptyTitle}>
-                      Aún no tienes viajes
-                    </Text>
-
-                    <Text style={styles.profileTripsEmptyText}>
-                      Cuando añadas un viaje, aparecerá aquí con sus fechas e
-                      información.
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={styles.profileTripsList}>
-                    {trips.slice(0, 3).map((trip) => (
-                      <Pressable
-                        key={trip.id}
-                        style={styles.profileTripRow}
-                        onPress={() => setSelectedProfileTrip(trip)}
-                      >
-                        {trip.imageUri ? (
-                          <Image
-                            source={{ uri: trip.imageUri }}
-                            style={styles.profileTripThumb}
-                            resizeMode="cover"
-                          />
-                        ) : (
-                          <View style={styles.profileTripThumbPlaceholder}>
-                            <Text style={styles.profileTripThumbIcon}>✈️</Text>
-                          </View>
-                        )}
-
-                        <View style={styles.profileTripInfo}>
-                          <Text style={styles.profileTripName}>
-                            {trip.name}
-                          </Text>
-
-                          <Text style={styles.profileTripDates}>
-                            {formatDate(trip.startDate)} -{' '}
-                            {formatDate(trip.endDate)}
-                          </Text>
-
-                          <Text style={styles.profileTripProvince}>
-                            {getProvinceName(trip.provinceId)}
-                          </Text>
-                        </View>
-
-                        <Text style={styles.profileTripArrow}>›</Text>
-                      </Pressable>
-                    ))}
-
-                    {trips.length > 3 ? (
-                      <Text style={styles.profileTripsMore}>
-                        Y {trips.length - 3} viaje
-                        {trips.length - 3 === 1 ? '' : 's'} más
-                      </Text>
-                    ) : null}
-                  </View>
-                )}
-              </View>
+              <Text style={styles.emptyText}>
+                Crea tu primer viaje para verlo aquí.
+              </Text>
 
               <Pressable
-                style={styles.deleteAccountButton}
-                onPress={handleDeleteAccount}
+                style={styles.emptyButton}
+                onPress={() => setActiveTab('trips')}
               >
-                <Text style={styles.deleteAccountButtonText}>
-                  Eliminar cuenta
-                </Text>
+                <Text style={styles.emptyButtonText}>Añadir viaje</Text>
               </Pressable>
-            </>
+            </View>
           )}
         </View>
-        
+      </View>
+    );
+  }
+
+  function renderActiveTab() {
+    if (isUserDataLoading) {
+      return renderLoadingCard();
+    }
+
+    if (loadErrorMessage) {
+      return (
+        <ErrorState
+          title="No se pudo cargar"
+          message={loadErrorMessage}
+          buttonText="Reintentar"
+          onRetry={loadUserData}
+        />
+      );
+    }
+
+    if (activeTab === 'map') {
+      return (
+        <SpainProvinceMap
+          provinceStatuses={provinceStatuses}
+          selectedProvince={selectedProvince}
+          onSelectProvince={setSelectedProvince}
+          onSetProvinceStatus={handleSetProvinceStatus}
+          onClearProvinceStatus={handleClearProvinceStatus}
+        />
+      );
+    }
+
+    if (activeTab === 'provinces') {
+      return (
+        <ProvincesScreenView
+          provinceStatuses={provinceStatuses}
+          selectedProvince={selectedProvince}
+          onSelectProvince={setSelectedProvince}
+          onSetProvinceStatus={handleSetProvinceStatus}
+          onClearProvinceStatus={handleClearProvinceStatus}
+        />
+      );
+    }
+
+    if (activeTab === 'trips') {
+      return (
+        <TripsScreenView
+          trips={trips}
+          onAddTrip={handleAddTrip}
+          onCreateTrip={handleAddTrip}
+          onUpdateTrip={handleUpdateTrip}
+          onDeleteTrip={handleDeleteTrip}
+          onSelectTrip={setSelectedProfileTrip}
+        />
+      );
+    }
+
+    if (activeTab === 'challenges') {
+      return (
+        <ChallengesScreenView
+          provinceStatuses={provinceStatuses}
+          trips={trips}
+        />
+      );
+    }
+
+    if (activeTab === 'friends') {
+      return userId ? (
+        <FriendsScreenView userId={userId} />
+      ) : (
+        <ErrorState
+          title="Sesión no encontrada"
+          message="Inicia sesión de nuevo para ver tus amigos."
+          buttonText="Cerrar sesión"
+          onRetry={handleSignOut}
+        />
+      );
+    }
+
+    return renderProfileScreen();
+  }
+
+  if (isAuthLoading) {
+    return (
+      <View style={styles.authLoadingScreen}>
+        <ActivityIndicator color={appColors.white} size="large" />
+        <Text style={styles.authLoadingText}>Abriendo SpainApp...</Text>
+      </View>
+    );
+  }
+
+  if (!isAuthenticated || !session) {
+    return <AuthScreen />;
+  }
+
+  return (
+    <View style={styles.screen}>
+      <ScrollView
+        style={styles.mainScroll}
+        contentContainerStyle={styles.mainScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderActiveTab()}
       </ScrollView>
 
-  
-      <View style={styles.bottomBarWrapper}>
-        <View style={styles.tabBar}>
-          <Pressable
-            style={styles.tabButton}
-            onPress={() => setActiveTab('map')}
-          >
-            <Text
-              style={[
-                styles.tabIcon,
-                activeTab === 'map' && styles.tabIconActive,
-              ]}
-            >
-              🗺️
-            </Text>
-            <Text
-              style={[
-                styles.tabButtonText,
-                activeTab === 'map' && styles.tabButtonTextActive,
-              ]}
-            >
-              Mapa
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={styles.tabButton}
-            onPress={() => setActiveTab('provinces')}
-          >
-            <Text
-              style={[
-                styles.tabIcon,
-                activeTab === 'provinces' && styles.tabIconActive,
-              ]}
-            >
-              ☰
-            </Text>
-            <Text
-              style={[
-                styles.tabButtonText,
-                activeTab === 'provinces' && styles.tabButtonTextActive,
-              ]}
-            >
-              Provincias
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={styles.tabButton}
-            onPress={() => setActiveTab('trips')}
-          >
-            <Text
-              style={[
-                styles.tabIcon,
-                activeTab === 'trips' && styles.tabIconActive,
-              ]}
-            >
-              ✈️
-            </Text>
-            <Text
-              style={[
-                styles.tabButtonText,
-                activeTab === 'trips' && styles.tabButtonTextActive,
-              ]}
-            >
-              Viajes
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={styles.tabButton}
-            onPress={() => setActiveTab('challenges')}
-          >
-            <Text
-              style={[
-                styles.tabIcon,
-                activeTab === 'challenges' && styles.tabIconActive,
-              ]}
-            >
-              🏆
-            </Text>
-            <Text
-              style={[
-                styles.tabButtonText,
-                activeTab === 'challenges' && styles.tabButtonTextActive,
-              ]}
-            >
-              Retos
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={styles.tabButton}
-            onPress={() => setActiveTab('friends')}
-          >
-            <Text
-              style={[
-                styles.tabIcon,
-                activeTab === 'friends' && styles.tabIconActive,
-              ]}
-            >
-              👥
-            </Text>
-            <Text
-              style={[
-                styles.tabButtonText,
-                activeTab === 'friends' && styles.tabButtonTextActive,
-              ]}
-            >
-              Amigos
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={styles.tabButton}
-            onPress={() => setActiveTab('profile')}
-          >
-            <Text
-              style={[
-                styles.tabIcon,
-                activeTab === 'profile' && styles.tabIconActive,
-              ]}
-            >
-              👤
-            </Text>
-            <Text
-              style={[
-                styles.tabButtonText,
-                activeTab === 'profile' && styles.tabButtonTextActive,
-              ]}
-            >
-              Perfil
-            </Text>
-          </Pressable>
-        </View>
-        <LegalFooter variant="bottomBar" />
-      </View>
+      <SettingsModal
+        visible={isSettingsVisible}
+        profileName={profileName}
+        isSavingName={isProfileNameSaving}
+        isChangingPhoto={isProfileImageLoading}
+        onClose={() => setIsSettingsVisible(false)}
+        onSaveName={handleSaveProfileName}
+        onChangePhoto={handleChangeProfileImage}
+        onLogout={handleSignOut}
+        onDeleteAccount={handleDeleteAccount}
+      />
 
       <Modal
-        visible={!!selectedProfileTrip}
+        visible={Boolean(selectedProfileTrip)}
         transparent
         animationType="fade"
         onRequestClose={() => setSelectedProfileTrip(null)}
       >
-        <View style={styles.tripDetailOverlay}>
-          <View style={styles.tripDetailCard}>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.tripDetailHeader}>
-                <View style={styles.tripDetailTitleBlock}>
-                  <Text style={styles.tripDetailEyebrow}>
-                    Detalle del viaje
+        <View style={styles.tripModalOverlay}>
+          <View style={styles.tripModalCard}>
+            {selectedProfileTrip?.imageUri ? (
+              <Image
+                source={{ uri: selectedProfileTrip.imageUri }}
+                style={styles.tripModalImage}
+              />
+            ) : (
+              <View style={styles.tripModalImagePlaceholder}>
+                <Text style={styles.tripModalImagePlaceholderText}>✈️</Text>
+              </View>
+            )}
+
+            <View style={styles.tripModalContent}>
+              <View style={styles.tripModalHeader}>
+                <View style={styles.tripModalTitleBlock}>
+                  <Text style={styles.tripModalTitle}>
+                    {selectedProfileTrip?.name}
                   </Text>
 
-                  <Text style={styles.tripDetailTitle}>
-                    {selectedProfileTrip?.name ?? ''}
+                  <Text style={styles.tripModalSubtitle}>
+                    {getProvinceName(selectedProfileTrip?.provinceId)}
                   </Text>
                 </View>
 
                 <Pressable
-                  style={styles.tripDetailCloseIcon}
+                  style={styles.tripModalCloseButton}
                   onPress={() => setSelectedProfileTrip(null)}
                 >
-                  <Text style={styles.tripDetailCloseIconText}>×</Text>
+                  <Text style={styles.tripModalCloseButtonText}>×</Text>
                 </Pressable>
               </View>
 
-              {selectedProfileTrip?.imageUri ? (
-                <Image
-                  source={{ uri: selectedProfileTrip.imageUri }}
-                  style={styles.tripDetailImage}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={styles.tripDetailImagePlaceholder}>
-                  <Text style={styles.tripDetailImagePlaceholderIcon}>✈️</Text>
-                </View>
-              )}
+              <Text style={styles.tripModalDate}>
+                {selectedProfileTrip ? getTripDateText(selectedProfileTrip) : ''}
+              </Text>
 
-              <View style={styles.tripDetailInfoGrid}>
-                <View style={styles.tripDetailInfoCard}>
-                  <Text style={styles.tripDetailInfoLabel}>Provincia</Text>
-
-                  <Text style={styles.tripDetailInfoValue}>
-                    {selectedProfileTrip
-                      ? getProvinceName(selectedProfileTrip.provinceId)
-                      : ''}
-                  </Text>
-                </View>
-
-                <View style={styles.tripDetailInfoCard}>
-                  <Text style={styles.tripDetailInfoLabel}>Fechas</Text>
-
-                  <Text style={styles.tripDetailInfoValue}>
-                    {selectedProfileTrip
-                      ? `${formatDate(
-                          selectedProfileTrip.startDate
-                        )} - ${formatDate(selectedProfileTrip.endDate)}`
-                      : ''}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.tripDetailNotesCard}>
-                <Text style={styles.tripDetailNotesTitle}>Descripción</Text>
-
-                <Text style={styles.tripDetailNotesText}>
-                  {selectedProfileTrip?.notes
-                    ? selectedProfileTrip.notes
-                    : 'Este viaje no tiene descripción añadida.'}
+              {selectedProfileTrip?.notes ? (
+                <Text style={styles.tripModalNotes}>
+                  {selectedProfileTrip.notes}
                 </Text>
-              </View>
-
-              <Pressable
-                style={styles.tripDetailCloseButton}
-                onPress={() => setSelectedProfileTrip(null)}
-              >
-                <Text style={styles.tripDetailCloseButtonText}>Cerrar</Text>
-              </Pressable>
-            </ScrollView>
+              ) : (
+                <Text style={styles.tripModalNotesMuted}>
+                  Este viaje no tiene notas.
+                </Text>
+              )}
+            </View>
           </View>
         </View>
       </Modal>
+
+      <View style={styles.bottomBarWrapper}>
+        <View style={styles.tabBar}>
+          {tabs.map((tab) => {
+            const isActive = activeTab === tab.id;
+
+            return (
+              <Pressable
+                key={tab.id}
+                style={[styles.tabButton, isActive && styles.tabButtonActive]}
+                onPress={() => setActiveTab(tab.id)}
+              >
+                <Text style={styles.tabIcon}>{tab.icon}</Text>
+
+                <Text
+                  style={[
+                    styles.tabButtonText,
+                    isActive && styles.tabButtonTextActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {tab.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <LegalFooter variant="bottomBar" />
+      </View>
     </View>
   );
 }const styles = StyleSheet.create({
-  loadingScreen: {
+  screen: {
     flex: 1,
-    backgroundColor: appColors.black,
+    backgroundColor: appColors.background,
+  },
+  authLoadingScreen: {
+    flex: 1,
+    backgroundColor: appColors.background,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
+    padding: 24,
+    gap: 14,
   },
-  loadingText: {
+  authLoadingText: {
     color: appColors.textSecondary,
     fontSize: 15,
     fontWeight: '800',
     fontFamily: appFonts.main,
+  },
+  mainScroll: {
+    flex: 1,
+  },
+  mainScrollContent: {
+    padding: 18,
+    paddingBottom: 180,
+    gap: 18,
   },
   loadingCard: {
     backgroundColor: appColors.surface,
     borderWidth: 1,
     borderColor: appColors.border,
-    borderRadius: 24,
-    padding: 24,
+    borderRadius: 28,
+    padding: 26,
     alignItems: 'center',
     gap: 12,
   },
-  loadingCardText: {
-    color: appColors.textSecondary,
-    fontSize: 15,
-    fontWeight: '800',
+  loadingTitle: {
+    color: appColors.text,
+    fontSize: 22,
+    fontWeight: '900',
+    textAlign: 'center',
     fontFamily: appFonts.main,
   },
-  appBackground: {
-    flex: 1,
-    backgroundColor: appColors.background,
+  loadingText: {
+    color: appColors.textSecondary,
+    fontSize: 15,
+    lineHeight: 21,
+    textAlign: 'center',
+    fontFamily: appFonts.main,
   },
-  screen: {
-    flex: 1,
-    backgroundColor: appColors.background,
+  profileContainer: {
+    gap: 18,
   },
-  container: {
-    minHeight: '100%',
-    alignItems: 'center',
-    padding: 20,
-    paddingTop: 34,
-    paddingBottom: 120,
-  },
-  phoneFrame: {
-    width: '100%',
-    maxWidth: 430,
-  },
-  profileCard: {
+  profileHeroCard: {
     backgroundColor: appColors.surface,
-    borderRadius: 24,
-    padding: 18,
     borderWidth: 1,
     borderColor: appColors.border,
-    flexDirection: 'row',
+    borderRadius: 30,
+    padding: 22,
     alignItems: 'center',
-    gap: 14,
-    marginBottom: 16,
   },
   avatarButton: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
     position: 'relative',
+    marginBottom: 14,
   },
-  avatar: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: appColors.white,
+  avatarImage: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 2,
+    borderColor: appColors.border,
+  },
+  avatarPlaceholder: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 2,
+    borderColor: appColors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarImage: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: appColors.surfaceSoft,
-  },
-  avatarText: {
-    color: appColors.black,
-    fontSize: 24,
+  avatarPlaceholderText: {
+    color: appColors.text,
+    fontSize: 38,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
@@ -1094,382 +1093,332 @@ export default function HomeScreen() {
     position: 'absolute',
     right: -2,
     bottom: -2,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: appColors.white,
-    borderWidth: 2,
-    borderColor: appColors.surface,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: appColors.background,
   },
   avatarEditBadgeText: {
-    color: appColors.black,
-    fontSize: 17,
-    fontWeight: '900',
-    lineHeight: 20,
-    fontFamily: appFonts.main,
-  },
-  profileInfoBlock: {
-    flex: 1,
+    fontSize: 16,
   },
   profileName: {
-    fontSize: 20,
-    fontWeight: '900',
     color: appColors.text,
+    fontSize: 30,
+    fontWeight: '900',
+    textAlign: 'center',
     fontFamily: appFonts.main,
   },
   profileSubtitle: {
-    fontSize: 15,
-    color: appColors.textMuted,
-    marginTop: 2,
-    fontFamily: appFonts.main,
-  },
-  profileLogoutButton: {
-    backgroundColor: appColors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-  },
-  profileLogoutButtonText: {
-    color: appColors.text,
-    fontSize: 13,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  completionCard: {
-    backgroundColor: appColors.surface,
-    borderRadius: 24,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    marginBottom: 14,
-  },
-  completionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 14,
-  },
-  completionNumber: {
-    fontSize: 34,
-    fontWeight: '900',
-    color: appColors.text,
-    marginBottom: 4,
-    fontFamily: appFonts.main,
-  },
-  completionLabel: {
-    fontSize: 15,
     color: appColors.textSecondary,
+    fontSize: 15,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginTop: 5,
     fontFamily: appFonts.main,
   },
-  completionCounter: {
-    fontSize: 16,
-    fontWeight: '900',
-    color: appColors.text,
-    marginTop: 6,
-    fontFamily: appFonts.main,
-  },
-  progressBar: {
+  profileProgressBar: {
+    width: '100%',
     height: 12,
     backgroundColor: appColors.surfaceSoft,
-    borderRadius: 100,
+    borderRadius: 999,
     overflow: 'hidden',
+    marginTop: 18,
+    borderWidth: 1,
+    borderColor: appColors.border,
   },
-  progressFill: {
+  profileProgressFill: {
     height: '100%',
-    backgroundColor: appColors.white,
-    borderRadius: 100,
+    backgroundColor: appColors.visited,
+    borderRadius: 999,
   },
-  summaryGrid: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 14,
-  },
-  summaryCard: {
-    flex: 1,
-    backgroundColor: appColors.surface,
-    borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: appColors.border,
-  },
-  summaryNumber: {
-    fontSize: 30,
-    fontWeight: '900',
-    color: appColors.text,
-    marginBottom: 4,
-    fontFamily: appFonts.main,
-  },
-  summaryLabel: {
-    fontSize: 14,
+  profileProgressText: {
     color: appColors.textMuted,
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 8,
     fontFamily: appFonts.main,
   },
-  profileChallengesCard: {
-    backgroundColor: appColors.surface,
-    borderRadius: 22,
-    padding: 18,
+  profileSettingsButton: {
+    backgroundColor: appColors.surfaceSoft,
     borderWidth: 1,
     borderColor: appColors.border,
-    marginBottom: 14,
-    flexDirection: 'row',
+    borderRadius: 18,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
     alignItems: 'center',
+    marginTop: 16,
+    width: '100%',
+  },
+  profileSettingsButtonText: {
+    color: appColors.text,
+    fontSize: 15,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  statCard: {
+    flexGrow: 1,
+    flexBasis: '45%',
+    backgroundColor: appColors.surface,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 24,
+    padding: 16,
+    minHeight: 100,
+    justifyContent: 'center',
+  },
+  statValue: {
+    color: appColors.text,
+    fontSize: 25,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  statLabel: {
+    color: appColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 5,
+    fontFamily: appFonts.main,
+  },
+  profileSection: {
+    backgroundColor: appColors.surface,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 28,
+    padding: 18,
+    gap: 14,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 12,
   },
-  profileChallengesTextBlock: {
+  sectionTitleBlock: {
     flex: 1,
   },
-  profileChallengesTitle: {
+  sectionTitle: {
+    color: appColors.text,
+    fontSize: 21,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  sectionSubtitle: {
+    color: appColors.textMuted,
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 4,
+    fontFamily: appFonts.main,
+  },
+  sectionAction: {
+    color: appColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '900',
+    textDecorationLine: 'underline',
+    fontFamily: appFonts.main,
+    marginTop: 4,
+  },
+  medalsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  medalCard: {
+    flexGrow: 1,
+    flexBasis: '45%',
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 22,
+    padding: 14,
+    alignItems: 'center',
+    minHeight: 138,
+    justifyContent: 'center',
+  },
+  medalIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: 'rgba(234, 179, 8, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(234, 179, 8, 0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  medalIconText: {
+    fontSize: 28,
+  },
+  medalTitle: {
+    color: appColors.text,
+    fontSize: 15,
+    fontWeight: '900',
+    textAlign: 'center',
+    lineHeight: 19,
+    fontFamily: appFonts.main,
+  },
+  medalSubtitle: {
+    color: appColors.textMuted,
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 5,
+    fontFamily: appFonts.main,
+  },
+  tripPreviewList: {
+    gap: 10,
+  },
+  tripPreviewCard: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 20,
+    padding: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  tripPreviewImage: {
+    width: 66,
+    height: 66,
+    borderRadius: 16,
+    backgroundColor: appColors.background,
+  },
+  tripPreviewImagePlaceholder: {
+    width: 66,
+    height: 66,
+    borderRadius: 16,
+    backgroundColor: appColors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tripPreviewImagePlaceholderText: {
+    fontSize: 26,
+  },
+  tripPreviewInfo: {
+    flex: 1,
+  },
+  tripPreviewName: {
+    color: appColors.text,
+    fontSize: 16,
+    fontWeight: '900',
+    fontFamily: appFonts.main,
+  },
+  tripPreviewMeta: {
+    color: appColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 3,
+    fontFamily: appFonts.main,
+  },
+  tripPreviewDate: {
+    color: appColors.textMuted,
+    fontSize: 12,
+    marginTop: 3,
+    fontFamily: appFonts.main,
+  },
+  emptyCard: {
+    backgroundColor: appColors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 22,
+    padding: 18,
+    alignItems: 'center',
+    gap: 9,
+  },
+  emptyTitle: {
     color: appColors.text,
     fontSize: 18,
     fontWeight: '900',
-    marginBottom: 5,
-    fontFamily: appFonts.main,
-  },
-  profileChallengesSubtitle: {
-    color: appColors.textSecondary,
-    fontSize: 14,
-    lineHeight: 20,
-    fontFamily: appFonts.main,
-  },
-  profileChallengesNumber: {
-    color: appColors.text,
-    fontSize: 24,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  profileTripsCard: {
-    backgroundColor: appColors.surface,
-    borderRadius: 22,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    marginBottom: 14,
-    gap: 14,
-  },
-  profileTripsHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  profileTripsTitleBlock: {
-    flex: 1,
-  },
-  profileTripsTitle: {
-    fontSize: 19,
-    fontWeight: '900',
-    color: appColors.text,
-    marginBottom: 4,
-    fontFamily: appFonts.main,
-  },
-  profileTripsSubtitle: {
-    fontSize: 14,
-    color: appColors.textMuted,
-    lineHeight: 20,
-    fontFamily: appFonts.main,
-  },
-  profileTripsCountPill: {
-    backgroundColor: appColors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-  },
-  profileTripsCountText: {
-    color: appColors.text,
-    fontSize: 14,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  profileTripsEmptyCard: {
-    backgroundColor: appColors.surfaceSoft,
-    borderRadius: 18,
-    padding: 15,
-    borderWidth: 1,
-    borderColor: appColors.border,
-  },
-  profileTripsEmptyTitle: {
-    color: appColors.text,
-    fontSize: 16,
-    fontWeight: '900',
-    marginBottom: 5,
-    fontFamily: appFonts.main,
-  },
-  profileTripsEmptyText: {
-    color: appColors.textSecondary,
-    fontSize: 14,
-    lineHeight: 20,
-    fontFamily: appFonts.main,
-  },
-  profileTripsList: {
-    gap: 10,
-  },
-  profileTripRow: {
-    backgroundColor: appColors.surfaceSoft,
-    borderRadius: 18,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  profileTripThumb: {
-    width: 54,
-    height: 54,
-    borderRadius: 16,
-    backgroundColor: appColors.surface,
-  },
-  profileTripThumbPlaceholder: {
-    width: 54,
-    height: 54,
-    borderRadius: 16,
-    backgroundColor: appColors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  profileTripThumbIcon: {
-    fontSize: 24,
-  },
-  profileTripInfo: {
-    flex: 1,
-  },
-  profileTripName: {
-    color: appColors.text,
-    fontSize: 16,
-    fontWeight: '900',
-    marginBottom: 3,
-    fontFamily: appFonts.main,
-  },
-  profileTripDates: {
-    color: appColors.textSecondary,
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 3,
-    fontFamily: appFonts.main,
-  },
-  profileTripProvince: {
-    color: appColors.text,
-    fontSize: 13,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  profileTripArrow: {
-    color: appColors.textMuted,
-    fontSize: 26,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  profileTripsMore: {
-    color: appColors.textMuted,
-    fontSize: 13,
-    fontWeight: '800',
     textAlign: 'center',
-    marginTop: 2,
     fontFamily: appFonts.main,
   },
-  deleteAccountButton: {
-    backgroundColor: appColors.surface,
-    borderWidth: 1,
-    borderColor: appColors.home,
-    borderRadius: 20,
-    paddingVertical: 15,
-    alignItems: 'center',
-    marginTop: 10,
+  emptyText: {
+    color: appColors.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+    fontFamily: appFonts.main,
   },
-  deleteAccountButtonText: {
-    color: appColors.home,
-    fontSize: 16,
+  emptyButton: {
+    backgroundColor: appColors.white,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    marginTop: 4,
+  },
+  emptyButtonText: {
+    color: appColors.black,
+    fontSize: 14,
     fontWeight: '900',
     fontFamily: appFonts.main,
   },
-  bottomBarWrapper: {
-    width: '100%',
-    alignItems: 'center',
-    backgroundColor: '#000000',
-    borderTopWidth: 1,
-    borderTopColor: appColors.border,
-  },
-  tabBar: {
-    width: '100%',
-    maxWidth: 430,
-    flexDirection: 'row',
-    paddingTop: 10,
-    paddingBottom: 16,
-    paddingHorizontal: 4,
-  },
-  tabButton: {
+  tripModalOverlay: {
     flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    padding: 18,
   },
-  tabIcon: {
-    fontSize: 19,
-    opacity: 0.45,
-  },
-  tabIconActive: {
-    opacity: 1,
-  },
-  tabButtonText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: appColors.textMuted,
-    fontFamily: appFonts.main,
-  },
-  tabButtonTextActive: {
-    color: appColors.white,
-  },
-  tripDetailOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.86)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  tripDetailCard: {
+  tripModalCard: {
     width: '100%',
-    maxWidth: 430,
+    maxWidth: 540,
     maxHeight: '88%',
     backgroundColor: appColors.surface,
-    borderRadius: 28,
+    borderRadius: 30,
     borderWidth: 1,
     borderColor: appColors.border,
-    padding: 18,
+    overflow: 'hidden',
   },
-  tripDetailHeader: {
+  tripModalImage: {
+    width: '100%',
+    height: 250,
+    backgroundColor: appColors.surfaceSoft,
+  },
+  tripModalImagePlaceholder: {
+    width: '100%',
+    height: 220,
+    backgroundColor: appColors.surfaceSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tripModalImagePlaceholderText: {
+    fontSize: 52,
+  },
+  tripModalContent: {
+    padding: 20,
+    gap: 12,
+  },
+  tripModalHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 14,
+    gap: 14,
   },
-  tripDetailTitleBlock: {
+  tripModalTitleBlock: {
     flex: 1,
   },
-  tripDetailEyebrow: {
-    color: appColors.textMuted,
-    fontSize: 12,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 5,
-    fontFamily: appFonts.main,
-  },
-  tripDetailTitle: {
+  tripModalTitle: {
     color: appColors.text,
     fontSize: 26,
     fontWeight: '900',
-    lineHeight: 31,
     fontFamily: appFonts.main,
   },
-  tripDetailCloseIcon: {
+  tripModalSubtitle: {
+    color: appColors.textSecondary,
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: 4,
+    fontFamily: appFonts.main,
+  },
+  tripModalCloseButton: {
     width: 34,
     height: 34,
     borderRadius: 17,
@@ -1479,89 +1428,72 @@ export default function HomeScreen() {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  tripDetailCloseIconText: {
+  tripModalCloseButtonText: {
     color: appColors.text,
     fontSize: 24,
-    fontWeight: '700',
-    lineHeight: 25,
-    fontFamily: appFonts.main,
+    fontWeight: '800',
+    lineHeight: 26,
   },
-  tripDetailImage: {
-    width: '100%',
-    height: 210,
-    borderRadius: 20,
-    backgroundColor: appColors.surfaceSoft,
-    marginBottom: 14,
-  },
-  tripDetailImagePlaceholder: {
-    width: '100%',
-    height: 160,
-    borderRadius: 20,
-    backgroundColor: appColors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 14,
-  },
-  tripDetailImagePlaceholderIcon: {
-    fontSize: 42,
-  },
-  tripDetailInfoGrid: {
-    gap: 10,
-    marginBottom: 14,
-  },
-  tripDetailInfoCard: {
-    backgroundColor: appColors.surfaceSoft,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: appColors.border,
-  },
-  tripDetailInfoLabel: {
+  tripModalDate: {
     color: appColors.textMuted,
     fontSize: 13,
-    fontWeight: '900',
-    marginBottom: 5,
+    fontWeight: '800',
     fontFamily: appFonts.main,
   },
-  tripDetailInfoValue: {
-    color: appColors.text,
-    fontSize: 16,
-    fontWeight: '900',
-    fontFamily: appFonts.main,
-  },
-  tripDetailNotesCard: {
-    backgroundColor: appColors.surfaceSoft,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: appColors.border,
-    marginBottom: 14,
-  },
-  tripDetailNotesTitle: {
-    color: appColors.text,
-    fontSize: 17,
-    fontWeight: '900',
-    marginBottom: 8,
-    fontFamily: appFonts.main,
-  },
-  tripDetailNotesText: {
+  tripModalNotes: {
     color: appColors.textSecondary,
     fontSize: 15,
     lineHeight: 22,
     fontFamily: appFonts.main,
   },
-  tripDetailCloseButton: {
-    backgroundColor: appColors.white,
-    borderRadius: 18,
-    paddingVertical: 15,
-    alignItems: 'center',
-  },
-  tripDetailCloseButtonText: {
-    color: appColors.black,
-    fontSize: 16,
-    fontWeight: '900',
+  tripModalNotesMuted: {
+    color: appColors.textMuted,
+    fontSize: 14,
+    lineHeight: 21,
     fontFamily: appFonts.main,
+  },
+  bottomBarWrapper: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    backgroundColor: appColors.surface,
+    borderWidth: 1,
+    borderColor: appColors.border,
+    borderRadius: 26,
+    paddingTop: 8,
+    paddingBottom: 7,
+    paddingHorizontal: 8,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  tabButton: {
+    flex: 1,
+    minHeight: 54,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 3,
+    gap: 2,
+  },
+  tabButtonActive: {
+    backgroundColor: appColors.white,
+  },
+  tabIcon: {
+    fontSize: 17,
+  },
+  tabButtonText: {
+    color: appColors.textMuted,
+    fontSize: 10,
+    fontWeight: '900',
+    textAlign: 'center',
+    fontFamily: appFonts.main,
+  },
+  tabButtonTextActive: {
+    color: appColors.black,
   },
 });

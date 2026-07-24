@@ -274,7 +274,8 @@ export default function ProvincesScreen({
                     {getStatusLabel(selectedProvinceStatus)}
                   </Text>
                 </View>
-              </View>              <View style={styles.infoGrid}>
+              </View>            
+                <View style={styles.infoGrid}>
                 <View style={styles.infoCard}>
                   <Text style={styles.infoLabel}>Capital</Text>
 

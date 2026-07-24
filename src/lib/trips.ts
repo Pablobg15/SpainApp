@@ -9,6 +9,7 @@ type TripRow = {
   province_id: string;
   notes: string | null;
   image_uri: string | null;
+  is_public: boolean | null;
 };
 
 function mapTripRow(row: TripRow): Trip {
@@ -20,13 +21,16 @@ function mapTripRow(row: TripRow): Trip {
     provinceId: row.province_id,
     notes: row.notes ?? '',
     imageUri: row.image_uri ?? undefined,
+    isPublic: row.is_public ?? true,
   };
 }
 
 export async function fetchTrips(userId: string) {
   const { data, error } = await supabase
     .from('trips')
-    .select('id, name, start_date, end_date, province_id, notes, image_uri')
+    .select(
+      'id, name, start_date, end_date, province_id, notes, image_uri, is_public'
+    )
     .eq('user_id', userId)
     .order('start_date', { ascending: false });
 
@@ -48,8 +52,11 @@ export async function createTrip(userId: string, trip: Trip) {
       province_id: trip.provinceId,
       notes: trip.notes,
       image_uri: trip.imageUri ?? null,
+      is_public: trip.isPublic ?? true,
     })
-    .select('id, name, start_date, end_date, province_id, notes, image_uri')
+    .select(
+      'id, name, start_date, end_date, province_id, notes, image_uri, is_public'
+    )
     .single();
 
   if (error) {
@@ -69,11 +76,14 @@ export async function updateTripInSupabase(userId: string, trip: Trip) {
       province_id: trip.provinceId,
       notes: trip.notes,
       image_uri: trip.imageUri ?? null,
+      is_public: trip.isPublic ?? true,
       updated_at: new Date().toISOString(),
     })
     .eq('id', trip.id)
     .eq('user_id', userId)
-    .select('id, name, start_date, end_date, province_id, notes, image_uri')
+    .select(
+      'id, name, start_date, end_date, province_id, notes, image_uri, is_public'
+    )
     .single();
 
   if (error) {
